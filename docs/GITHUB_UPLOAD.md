@@ -1,6 +1,6 @@
 # 手动上传到 GitHub 并发布网站
 
-项目已准备好 `.gitignore`、`.gitattributes`、MIT 许可、使用说明、问题反馈模板和 GitHub Pages 自动发布流程。本地已初始化 Git，分支为 `main`。目前没有上传代码，也没有创建远程仓库或公开网站。
+项目已准备好 `.gitignore`、`.gitattributes`、MIT 许可、使用说明、问题反馈模板和 GitHub Pages 自动发布流程，使用 `main` 分支。此文档介绍首次上传与后续更新；实际发布状态请查看仓库的 Actions 和 Pages 页面。
 
 下面按账号 `HelloLiHua`、仓库名 `House_Manage` 举例。使用其他账号或仓库名时，请替换上传命令中的地址，并修改 README 与 package.json 中的网站、仓库和问题反馈链接。
 
