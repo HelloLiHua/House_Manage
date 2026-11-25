@@ -1,0 +1,26 @@
+name: 问题反馈
+description: 报告布局、尺寸、碰撞或页面操作问题
+body:
+  - type: textarea
+    id: steps
+    attributes:
+      label: 操作步骤
+      description: 从哪个界面开始，依次做了什么？
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器和设备
+      placeholder: 例如 Windows 11 / Edge，或 iPhone / Safari
+  - type: textarea
+    id: attachment
+    attributes:
+      label: 截图或示例方案
+      description: 可附虚构数据的 JSON 或截图。请勿包含住址、密钥或个人信息。
