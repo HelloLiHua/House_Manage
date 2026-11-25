@@ -9,6 +9,7 @@ export type Door = {
   id: string; wallId: string; offset: number; width: number; height: number; flip: boolean
   // Optional fields preserve compatibility with existing version-1 plans.
   type?: DoorType
+  hingeSide?: 'start' | 'end' // Swing-door hinge along the wall; legacy doors use start.
   slidingStyle?: 'bypass' | 'single'
   slideDirection?: 'start' | 'end'
   opening?: number // Percentage of the available travel, not of the entire doorway.
@@ -91,6 +92,7 @@ export function parsePlan(raw: string): Plan {
     const w = p.walls.find((v: Wall) => v.id === d.wallId)
     if (!w || !n(d.width, 20, 500) || !n(d.height, 20, 1000) || !n(d.offset, d.width / 2, Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y) - d.width / 2) || typeof d.flip !== 'boolean') fail()
     if (d.type !== undefined && !['swing', 'sliding'].includes(d.type)) fail()
+    if (d.hingeSide !== undefined && !['start', 'end'].includes(d.hingeSide)) fail()
     if (d.slidingStyle !== undefined && !['bypass', 'single'].includes(d.slidingStyle)) fail()
     if (d.slideDirection !== undefined && !['start', 'end'].includes(d.slideDirection)) fail()
     if (d.opening !== undefined && !n(d.opening, 0, 100)) fail()

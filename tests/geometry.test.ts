@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons } from '../src/geometry.ts'
+import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry } from '../src/geometry.ts'
 import { initialPlan, emptyPlan, parsePlan, type Furniture, type Plan, type Door } from '../src/model.ts'
 
 const box = (patch: Partial<Furniture> = {}): Furniture => ({ id: 'box', name: '箱子', kind: 'custom', x: 0, y: 0, width: 40, depth: 40, height: 80, rotation: 0, color: '#aabbcc', ...patch })
@@ -99,6 +99,39 @@ test('bypass opening is half the total width at full travel and switches sides',
   assert.deepEqual(doorPassage({ ...d, opening: 50 }), { from: 110, to: 155, width: 45 })
   assert.deepEqual(doorPassage({ ...d, slideDirection: 'start' }), { from: 200, to: 290, width: 90 })
   assert.equal(doorPassage({ ...d, opening: 0 }).width, 0)
+})
+
+test('swing doors support both hinges and wall sides while preserving legacy drawings', () => {
+  const door = { ...doorPlan().doors[0], width: 100 }
+  assert.deepEqual(swingDoorGeometry(door), { hinge: { x: 0, y: 0 }, closed: { x: 100, y: 0 }, open: { x: 0, y: 100 }, sweep: 1 })
+  for (const hingeSide of ['start', 'end'] as const) for (const flip of [false, true]) {
+    const d = { ...door, hingeSide, flip }, shape = swingDoorGeometry(d)
+    const x = hingeSide === 'end' ? 100 : 0
+    assert.deepEqual(shape.hinge, { x, y: 0 })
+    assert.deepEqual(shape.open, { x, y: flip ? -100 : 100 })
+    assert.deepEqual(shape.closed, { x: 100 - x, y: 0 })
+    assert.equal(shape.sweep, hingeSide === 'end' ? Number(flip) : Number(!flip))
+    const plan = { ...doorPlan(), doors: [d] }
+    assert.deepEqual(parsePlan(JSON.stringify(plan)), plan)
+  }
+  for (const hingeSide of ['left', 'right', '', null, false, 0]) {
+    assert.throws(() => parsePlan(JSON.stringify({ ...doorPlan(), doors: [{ ...door, hingeSide }] })))
+  }
+})
+
+test('merging reversed horizontal and vertical walls preserves swing hinges and open leaves', () => {
+  for (const vertical of [false, true]) for (const hingeSide of [undefined, 'start', 'end'] as const) for (const flip of [false, true]) {
+    const point = (n: number) => vertical ? { x: 0, y: n } : { x: n, y: 0 }
+    const p: Plan = { ...emptyPlan(), walls: [{ id: 'w', a: point(400), b: point(0), thickness: 12 }], doors: [{ id: 'd', wallId: 'w', offset: 180, width: 100, height: 210, flip, hingeSide }] }
+    const endpoints = (plan: Plan) => {
+      const d = plan.doors[0], w = plan.walls[0], shape = swingDoorGeometry(d)
+      const origin = wallPoint(w, d.offset - d.width / 2), length = Math.hypot(w.b.x - w.a.x, w.b.y - w.a.y)
+      const dx = (w.b.x - w.a.x) / length, dy = (w.b.y - w.a.y) / length
+      return [shape.hinge, shape.closed, shape.open].map(v => ({ x: origin.x + v.x * dx - v.y * dy, y: origin.y + v.x * dy + v.y * dx }))
+    }
+    const next = integrateWall(p, { id: 'new', a: point(-100), b: point(100), thickness: 12 })
+    assert.deepEqual(endpoints(next), endpoints(p))
+  }
 })
 test('bypass passage accepts fitting furniture and blocks the parked panel side', () => {
   const plan = slidingPlan()

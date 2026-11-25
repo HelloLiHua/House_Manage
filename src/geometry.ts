@@ -46,6 +46,15 @@ export function doorPassage(d: Door): { from: number; to: number; width: number 
   const width = max * (d.opening ?? 100) / 100
   return d.slideDirection === 'start' ? { from: right - width, to: right, width } : { from: left, to: left + width, width }
 }
+// Local coordinates run along the opening; positive Y points to one wall side.
+export function swingDoorGeometry(d: Door) {
+  const atEnd = d.hingeSide === 'end', x = atEnd ? d.width : 0
+  return {
+    hinge: { x, y: 0 }, closed: { x: atEnd ? 0 : d.width, y: 0 },
+    open: { x, y: (d.flip ? -1 : 1) * d.width },
+    sweep: d.flip === atEnd ? 1 : 0,
+  }
+}
 export type SlidingPanel = { x: number; y: number; width: number; depth: number }
 // Coordinates are relative to the beginning of the entire opening, along its
 // wall. Rendering and collision detection share these exact panel rectangles.
@@ -139,8 +148,9 @@ export function integrateWall(plan: Plan, added: Wall): Plan {
       if (!matches.has(d.wallId)) return d
       const old = plan.walls.find(w => w.id === d.wallId)!
       const reversed = coord(old.b) < coord(old.a)
-      const orientation = d.type === 'sliding' && reversed
-        ? { flip: !d.flip, slideDirection: d.slideDirection === 'start' ? 'end' as const : 'start' as const }
+      const orientation = reversed
+        ? { flip: !d.flip, hingeSide: d.hingeSide === 'end' ? 'start' as const : 'end' as const,
+          ...(d.type === 'sliding' ? { slideDirection: d.slideDirection === 'start' ? 'end' as const : 'start' as const } : {}) }
         : {}
       return { ...d, ...orientation, wallId: wall.id, offset: coord(wallPoint(old, d.offset)) - lo }
     }),

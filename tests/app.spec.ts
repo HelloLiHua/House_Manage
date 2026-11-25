@@ -218,6 +218,94 @@ test('orientation previews without moving the plan, applies once, and supports u
   await page.screenshot({ path: 'work/roomly-orientation.png', fullPage: true })
 })
 
+test('swing door hinge and opening side are independent and survive history, saving and exports', async ({ page }) => {
+  await page.goto('/')
+  const door = page.getByTestId('door-entry'), leaf = door.locator('.swing-leaf')
+  await door.locator('rect').first().click()
+  const hinge = page.getByRole('group', { name: '门轴位置', exact: true })
+  const opening = page.getByRole('group', { name: '开启方向', exact: true })
+  for (const side of ['左侧', '右侧']) for (const direction of ['向上开启', '向下开启']) {
+    await hinge.getByRole('button', { name: side, exact: true }).click()
+    await opening.getByRole('button', { name: direction, exact: true }).click()
+    const x = side === '右侧' ? '100' : '0', y = direction === '向上开启' ? '-100' : '100'
+    await expect(leaf).toHaveAttribute('x1', x); await expect(leaf).toHaveAttribute('x2', x)
+    await expect(leaf).toHaveAttribute('y2', y)
+    await expect(door.locator('.swing-hinge')).toHaveAttribute('cx', x)
+    await expect(door.locator('.swing-arc')).toHaveAttribute('d', `M ${100 - Number(x)} 0 A 100 100 0 0 ${side === '右侧' ? Number(direction === '向上开启') : Number(direction === '向下开启')} ${x} ${y}`)
+  }
+  await hinge.getByRole('button', { name: '左侧', exact: true }).click()
+  await page.getByRole('button', { name: '撤销', exact: true }).click()
+  await expect(leaf).toHaveAttribute('x1', '100')
+  await page.getByRole('button', { name: '重做', exact: true }).click()
+  await expect(leaf).toHaveAttribute('x1', '0')
+  await hinge.getByRole('button', { name: '右侧', exact: true }).click()
+  await opening.getByRole('button', { name: '向上开启', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => {
+    const door = JSON.parse(localStorage.getItem('roomly.plan.v1') ?? '{}').doors?.find((d: { id: string }) => d.id === 'entry')
+    return [door?.hingeSide, door?.flip]
+  })).toEqual(['end', true])
+  await page.reload()
+  await expect(leaf).toHaveAttribute('x1', '100'); await expect(leaf).toHaveAttribute('y2', '-100')
+  await door.locator('rect').first().click()
+  await expect(hinge.getByRole('button', { name: '右侧', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.screenshot({ path: 'work/roomly-swing-direction.png', fullPage: true })
+  await page.getByRole('button', { name: '导出方案', exact: true }).click()
+  const jsonDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: '可编辑方案', exact: false }).click()
+  const saved = parsePlan(await readFile((await (await jsonDownload).path())!, 'utf-8'))
+  expect(saved.doors.find(d => d.id === 'entry')).toMatchObject({ hingeSide: 'end', flip: true })
+  await page.getByRole('button', { name: '导出方案', exact: true }).click()
+  const svgDownload = page.waitForEvent('download')
+  await page.getByRole('button', { name: '平面图', exact: false }).click()
+  const svg = await readFile((await (await svgDownload).path())!, 'utf-8')
+  const exported = await page.evaluate(raw => {
+    const doc = new DOMParser().parseFromString(raw, 'image/svg+xml')
+    const leaf = doc.querySelector('[data-testid="door-entry"] .swing-leaf')
+    return { error: !!doc.querySelector('parsererror'), x: leaf?.getAttribute('x1'), y: leaf?.getAttribute('y2') }
+  }, svg)
+  expect(exported).toEqual({ error: false, x: '100', y: '-100' })
+  await hinge.getByRole('button', { name: '左侧', exact: true }).click()
+  await page.getByLabel('导入方案文件').setInputFiles({ name: 'doors.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(saved)) })
+  await expect(leaf).toHaveAttribute('x1', '100')
+  await page.getByLabel('导入方案文件').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...saved, doors: saved.doors.map(d => ({ ...d, hingeSide: 'left' })) })) })
+  await expect(page.getByRole('status')).toContainText('文件格式不正确')
+  await expect(leaf).toHaveAttribute('x1', '100')
+  await door.locator('rect').first().click()
+  await page.getByRole('button', { name: '推拉门', exact: true }).click()
+  await page.getByRole('button', { name: '平开门', exact: true }).click()
+  await expect(leaf).toHaveAttribute('x1', '100')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByRole('button', { name: '显示或隐藏家具库', exact: true }).click()
+  const closeToast = page.getByRole('button', { name: '关闭提示', exact: true })
+  if (await closeToast.isVisible()) await closeToast.click()
+  await expect(hinge.getByRole('button', { name: '右侧', exact: true })).toBeVisible()
+  await hinge.getByRole('button', { name: '左侧', exact: true }).click()
+  await expect(leaf).toHaveAttribute('x1', '0')
+  await page.screenshot({ path: 'work/roomly-swing-direction-mobile.png', fullPage: true })
+})
+
+for (const fixture of [
+  { name: 'reversed horizontal', a: { x: 400, y: 0 }, b: { x: 0, y: 0 }, start: '右侧', end: '左侧', direction: '向下开启' },
+  { name: 'vertical', a: { x: 0, y: 0 }, b: { x: 0, y: 400 }, start: '上侧', end: '下侧', direction: '向右开启' },
+  { name: 'diagonal', a: { x: 0, y: 0 }, b: { x: 400, y: 400 }, start: '左上侧', end: '右下侧', direction: '向右上开启' },
+]) test(`swing settings match screen directions for a ${fixture.name} wall`, async ({ page }) => {
+  await loadPlan(page, { ...emptyPlan(), walls: [{ id: 'wall', a: fixture.a, b: fixture.b, thickness: 12 }], doors: [{ id: 'door', wallId: 'wall', offset: 200, width: 100, height: 210, flip: false }] })
+  const door = page.getByTestId('door-door')
+  await door.locator('rect').first().click()
+  const hinge = page.getByRole('group', { name: '门轴位置', exact: true })
+  await expect(hinge.getByRole('button', { name: fixture.start, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await hinge.getByRole('button', { name: fixture.end, exact: true }).click()
+  await page.getByRole('button', { name: fixture.direction, exact: true }).click()
+  const world = await door.locator('.swing-leaf').evaluate(el => {
+    const line = el as SVGLineElement, m = line.getCTM()!
+    return [new DOMPoint(line.x1.baseVal.value, line.y1.baseVal.value).matrixTransform(m), new DOMPoint(line.x2.baseVal.value, line.y2.baseVal.value).matrixTransform(m)].map(p => ({ x: p.x, y: p.y }))
+  })
+  const dx = world[1].x - world[0].x, dy = world[1].y - world[0].y
+  if (fixture.direction.includes('右')) expect(dx).toBeGreaterThan(0)
+  if (fixture.direction.includes('上')) expect(dy).toBeLessThan(0)
+  if (fixture.direction.includes('下')) expect(dy).toBeGreaterThan(0)
+})
+
 test('orientation validates input and stays consistent through JSON and SVG exports and imports', async ({ page }) => {
   await page.goto('/')
   const compass = page.getByTestId('canvas-compass')

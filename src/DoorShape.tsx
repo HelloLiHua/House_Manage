@@ -1,14 +1,18 @@
 import type { Door, Wall } from './model'
-import { doorPassage, slidingPanels } from './geometry'
+import { doorPassage, slidingPanels, swingDoorGeometry } from './geometry'
 
 export default function DoorShape({ door: d, wall: w, selected }: { door: Door; wall: Wall; selected: boolean }) {
   const sign = d.flip ? -1 : 1
-  if (d.type !== 'sliding') return <>
-    <rect x={0} y={-w.thickness / 2} width={d.width} height={w.thickness} fill={selected ? '#dbe6c8' : '#f5f3ec'} />
-    <path className="swing-arc" d={`M ${d.width} 0 A ${d.width} ${d.width} 0 0 ${d.flip ? 0 : 1} 0 ${d.width * sign}`} fill="none" stroke="#a5ac99" strokeWidth={1.4} strokeDasharray="4 3" />
-    <line x1={0} y1={0} x2={0} y2={d.width * sign} stroke="#8f9b7e" strokeWidth={3} />
-    <text x={d.width / 2} y={sign * 17} fontSize={11} fill="#859178" textAnchor="middle">{d.width}</text>
-  </>
+  if (d.type !== 'sliding') {
+    const { hinge, closed, open, sweep } = swingDoorGeometry(d)
+    return <g className="swing-door-symbol" data-hinge-side={d.hingeSide ?? 'start'}>
+      <rect x={0} y={-w.thickness / 2} width={d.width} height={w.thickness} fill={selected ? '#dbe6c8' : '#f5f3ec'} />
+      <path className="swing-arc" d={`M ${closed.x} ${closed.y} A ${d.width} ${d.width} 0 0 ${sweep} ${open.x} ${open.y}`} fill="none" stroke="#a5ac99" strokeWidth={1.4} strokeDasharray="4 3" />
+      <line className="swing-leaf" x1={hinge.x} y1={hinge.y} x2={open.x} y2={open.y} stroke="#8f9b7e" strokeWidth={3} />
+      <circle className="swing-hinge" cx={hinge.x} cy={hinge.y} r={2.5} fill="#71894f" />
+      <text x={d.width / 2} y={sign * 17} fontSize={11} fill="#859178" textAnchor="middle">{d.width}</text>
+    </g>
+  }
   const passage = doorPassage(d), panels = slidingPanels(d, w), single = d.slidingStyle === 'single'
   const trackStart = single && d.slideDirection === 'start' ? -d.width : 0
   const trackEnd = single && d.slideDirection !== 'start' ? d.width * 2 : d.width

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowDownToLine, ArrowRight, ArrowUpFromLine, Box, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Copy, DoorOpen, FilePlus2, FolderOpen, Grid2X2, House, Info, Layers, LayoutTemplate, MousePointer2, Package, PanelLeftClose, PanelsLeftBottom, Pencil, Play, Plus, Redo2, RotateCcw, RotateCw, Route, Ruler, Search, Settings2, ShieldCheck, Sofa, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
 import Canvas from './Canvas'
 import OrientationSettings from './OrientationSettings'
+import SwingDoorSettings from './SwingDoorSettings'
 import type { Selection, Tool, RoutePoint } from './Canvas'
 import { FurnitureThumbnail } from './FurnitureShape'
 import { collision, distance, doorPassage, integrateWall, sweep } from './geometry'
@@ -330,7 +331,7 @@ function App() {
                 <div className="door-presets"><button onClick={() => updateDoor({ opening: 0 })}>关闭</button><button onClick={() => updateDoor({ opening: 50 })}>半开</button><button onClick={() => updateDoor({ opening: 100 })}>全开</button></div>
                 <div className="door-passage" role="status"><span>当前可通行净宽</span><strong>{Number(doorPassage(selectedDoor).width.toFixed(1))}<small> cm</small></strong></div>
                 <button className="secondary-button full-width" onClick={() => updateDoor({ flip: !selectedDoor.flip })}><RotateCw size={15} />切换轨道所在墙侧</button>
-              </> : <button className="secondary-button full-width" onClick={() => updateDoor({ flip: !selectedDoor.flip })}><RotateCw size={15} />切换开启方向</button>}
+              </> : <SwingDoorSettings door={selectedDoor} wall={plan.walls.find(w => w.id === selectedDoor.wallId)!} onChange={updateDoor} />}
             </div>
             <div className="info-box"><Info size={16} /><p>{selectedDoor.type === 'sliding' ? '绿色虚线是可通行开口。双扇错叠全开时净宽为总宽的一半；单扇沿墙需预留门扇停靠空间。检测包含当前门扇位置，未模拟推门动作和门框五金余量。' : '请填写实际可通过的净尺寸。搬运检测同时检查门宽与高度；平开门的门扇暂未作为障碍物。'}</p></div>
             <button className="delete-button" onClick={remove}><Trash2 size={15} />删除{selectedDoor.type === 'sliding' ? '推拉门' : '门洞'}</button>
