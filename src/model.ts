@@ -18,6 +18,7 @@ export type Room = Point & { id: string; name: string; width: number; depth: num
 export type Plan = {
   version: 1; name: string; rooms: Room[]; walls: Wall[]; doors: Door[]; items: Furniture[]
   northAngle?: number // Clockwise from screen-up, in [0, 360). Older plans default to north-up.
+  orientationLocked?: boolean // Absent in older plans; defaults to locked.
 }
 export type Template = Omit<Furniture, 'id' | 'x' | 'y' | 'rotation'>
 export const uid = () => crypto.randomUUID()
@@ -79,6 +80,7 @@ export function parsePlan(raw: string): Plan {
   const id = (s: unknown) => { if (typeof s !== 'string' || !s || s.length > 100 || ids.has(s)) fail(); ids.add(s as string) }
   const n = (v: unknown, min = -10000, max = 10000) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
   if (p.northAngle !== undefined && (!n(p.northAngle, 0, 360) || p.northAngle === 360)) return fail()
+  if (p.orientationLocked !== undefined && typeof p.orientationLocked !== 'boolean') return fail()
   const xy = (o: Point) => o && n(o.x) && n(o.y)
   const name = (v: unknown) => typeof v === 'string' && v.length <= 100
   const color = (v: unknown) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)

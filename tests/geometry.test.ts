@@ -14,12 +14,20 @@ test('sample floor plan starts without collisions and round-trips exactly', () =
 test('orientation preserves legacy plans, round-trips precise angles and rejects invalid data', () => {
   const legacy = initialPlan()
   assert.equal(parsePlan(JSON.stringify(legacy)).northAngle ?? 0, 0)
+  assert.equal(parsePlan(JSON.stringify(legacy)).orientationLocked ?? true, true)
   for (const northAngle of [0, 90, 180, 270, 30.5, 359.99]) {
     const plan = { ...legacy, northAngle }
     assert.deepEqual(parsePlan(JSON.stringify(plan)), plan)
   }
   for (const northAngle of [-1, 360, 361, null, '90', {}, NaN, Infinity]) {
     assert.throws(() => parsePlan(JSON.stringify({ ...legacy, northAngle })))
+  }
+  for (const orientationLocked of [true, false]) {
+    const plan = { ...legacy, northAngle: 37.5, orientationLocked }
+    assert.deepEqual(parsePlan(JSON.stringify(plan)), plan)
+  }
+  for (const orientationLocked of [null, 'false', 0, 1, {}, []]) {
+    assert.throws(() => parsePlan(JSON.stringify({ ...legacy, orientationLocked })))
   }
 })
 test('rectangles can touch, but overlapping rotated corners are detected', () => {
