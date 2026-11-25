@@ -59,7 +59,7 @@ git push -u origin main
 - 代码仓库：`https://github.com/HelloLiHua/House_Manage`
 - 网站地址：`https://hellolihua.github.io/House_Manage/`
 
-网站发布流程会自动检查代码、运行 18 项几何测试和 8 项浏览器测试，再生成并发布静态页面。上传源码后无需自行上传 `dist` 或 `node_modules`。项目网站的资源路径会根据仓库名自动设置。
+网站发布流程会自动检查代码、运行几何与方案验证测试和浏览器测试，再生成并发布静态页面。上传源码后无需自行上传 `dist` 或 `node_modules`。项目网站的资源路径会根据仓库名自动设置。
 
 ## 4. 后续更新
 

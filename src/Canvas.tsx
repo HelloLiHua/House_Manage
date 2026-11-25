@@ -1,10 +1,11 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { Minus, Plus, Maximize, MousePointer2, Hand, Pentagon, DoorOpen, PanelsLeftBottom, Ruler, SquareDashed, RotateCcw, RotateCw, Compass } from 'lucide-react'
+import { Minus, Plus, Maximize, MousePointer2, Hand, Pentagon, DoorOpen, PanelsLeftBottom, Ruler, SquareDashed, RotateCcw, RotateCw } from 'lucide-react'
 import type { Plan, Point, Furniture, Wall, Room } from './model'
 import { distance, wallPoint, wallPieces, projectOnWall, corners, collision, overlaps } from './geometry'
 import { FurnitureShape } from './FurnitureShape'
 import DoorShape from './DoorShape'
+import CompassRose from './CompassRose'
 
 export type Tool = 'select' | 'room' | 'wall' | 'door' | 'sliding-door' | 'measure' | 'pan'
 export type Selection = { type: 'item' | 'wall' | 'door' | 'room'; id: string } | null
@@ -13,6 +14,7 @@ type Props = {
   plan: Plan; selection: Selection; tool: Tool; mode: 'design' | 'move'; snap: boolean; showDims: boolean; fitKey: number;
   route: RoutePoint[]; blocked: boolean; clearance: number;
   onSelect: (s: Selection) => void; onTool: (t: Tool) => void;
+  onOrientation: () => void;
   onDragStart: () => void; onMove: (item: Furniture) => void; onRotate: (degrees: number) => void;
   onDraw: (a: Point, b: Point, type: 'wall' | 'room') => void; onDoor: (wall: Wall, offset: number) => void;
 }
@@ -135,6 +137,9 @@ export default function Canvas(p: Props) {
   }
   return <div className={`canvas-shell tool-${p.tool} ${p.mode === 'move' ? 'moving-mode' : ''}`} ref={boxRef}>
     <div className="canvas-label"><span className="live-dot" /> {p.mode === 'move' ? '搬运试验' : '二维平面'}<span className="label-divider" />单位：cm</div>
+    <button className="compass-control" aria-label="设置房屋朝向" data-testid="canvas-compass" disabled={p.mode === 'move'} title={p.mode === 'move' ? '结束搬运试验后可修改朝向' : `北向 ${p.plan.northAngle ?? 0}° · 点击设置朝向`} onClick={p.onOrientation}>
+      <CompassRose angle={p.plan.northAngle ?? 0} /><span>{p.mode === 'move' ? '房屋朝向' : '设置朝向'}</span>
+    </button>
     <div className="floating-tools" aria-label="绘图工具栏">{tools.map(t => <button key={t.id} disabled={p.mode === 'move' && !['select', 'pan', 'measure'].includes(t.id)} aria-label={t.name} title={`${t.name} · ${t.key}`} className={p.tool === t.id ? 'active' : ''} onClick={() => { p.onTool(t.id); setMeasurement(null) }}><t.icon size={19} /></button>)}</div>
     <svg ref={svgRef} className="floor-canvas" data-testid="floor-canvas" aria-label="房屋平面布置画布" viewBox={`${view.x - viewWidth / 2} ${view.y - viewHeight / 2} ${viewWidth} ${viewHeight}`} onPointerDown={start} onPointerMove={move} onPointerUp={stop} onPointerCancel={() => { drag.current = null; drawLatest.current = null; setDraft(null) }}>
       <defs>
@@ -189,7 +194,7 @@ export default function Canvas(p: Props) {
     </svg>
     {!p.plan.walls.length && !p.plan.items.length && <div className="canvas-empty"><SquareDashed size={40} strokeWidth={1} /><h2>从一个房间开始</h2><p>选择「绘制房间」，在画布上拖出你的空间</p><button className="primary-button" onClick={() => p.onTool('room')}>绘制第一个房间</button></div>}
     <div className="canvas-bottom">
-      <div className="scale-guide"><Compass size={18} /><span><i style={{ width: 100 * view.scale }} />1 m</span></div>
+      <div className="scale-guide"><span><i style={{ width: 100 * view.scale }} />1 m</span></div>
       {activeItem && <div className="rotate-controls"><button onClick={() => p.onRotate(-15)} title="逆时针旋转 15°（Q）" aria-label="逆时针旋转"><RotateCcw size={16} /></button><span>{Math.round((activeItem.rotation % 360 + 360) % 360)}°</span><button onClick={() => p.onRotate(15)} title="顺时针旋转 15°（E）" aria-label="顺时针旋转"><RotateCw size={16} /></button></div>}
       <div className="zoom-controls"><button aria-label="缩小" onClick={() => setView(v => ({ ...v, scale: Math.max(.12, v.scale / 1.2) }))}><Minus size={16} /></button><span>{Math.round(view.scale * 100)}%</span><button aria-label="放大" onClick={() => setView(v => ({ ...v, scale: Math.min(3, v.scale * 1.2) }))}><Plus size={16} /></button><i /><button aria-label="适应画布" title="适应画布" onClick={fit}><Maximize size={16} /></button></div>
     </div>
