@@ -2,7 +2,7 @@
 
 一个按真实尺寸设计二维户型、摆放家具并试验搬运路线的网站。全部计算和方案保存都在浏览器内完成，无需登录或配置后端。
 
-[在线使用](https://hellolihua.github.io/House_Manage/) · [问题反馈](https://github.com/HelloLiHua/House_Manage/issues) · [MIT 许可](LICENSE)
+[网站入口](https://hellolihua.github.io/House_Manage/)（首次部署成功后可用） · [问题反馈](https://github.com/HelloLiHua/House_Manage/issues) · [MIT 许可](LICENSE)
 
 ![Roomly 平面设计与推拉门设置](docs/images/roomly-preview.png)
 
@@ -103,6 +103,8 @@ JSON 是本应用的可编辑源文件（version: 1），保存房间、墙体�
 
 
 ## 部署到 GitHub Pages
+
+首次手动上传，请按照 [GitHub 上传与网站发布说明](docs/GITHUB_UPLOAD.md) 操作。
 
 仓库包含自动检查和部署流程 `.github/workflows/pages.yml`。在 GitHub 仓库的 **Settings → Pages → Build and deployment → Source** 中选择 **GitHub Actions**，向 `main` 推送代码后会自动执行代码检查、几何测试、浏览器测试、构建和部署。
 
