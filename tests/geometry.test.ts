@@ -1,10 +1,36 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry } from '../src/geometry.ts'
+import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry, translateWall } from '../src/geometry.ts'
 import { initialPlan, emptyPlan, parsePlan, type Furniture, type Plan, type Door } from '../src/model.ts'
 
 const box = (patch: Partial<Furniture> = {}): Furniture => ({ id: 'box', name: '箱子', kind: 'custom', x: 0, y: 0, width: 40, depth: 40, height: 80, rotation: 0, color: '#aabbcc', ...patch })
 const doorPlan = (): Plan => ({ ...emptyPlan(), walls: [{ id: 'w', a: { x: 0, y: -200 }, b: { x: 0, y: 200 }, thickness: 12 }], doors: [{ id: 'd', wallId: 'w', offset: 200, width: 90, height: 210, flip: false }] })
+
+test('wall translations preserve precise geometry and door offsets with and without snapping', () => {
+  for (const b of [{ x: 500.5, y: 30.25 }, { x: 10.25, y: 600.75 }, { x: 410.75, y: 330.5 }, { x: -500.5, y: -30.25 }]) {
+    const wall = { id: 'w', a: { x: 10.25, y: 30.25 }, b, thickness: 12 }
+    for (const snap of [false, true]) {
+      const moved = translateWall(wall, { x: 23.2, y: -46.1 }, snap)
+      const delta = snap ? { x: 20, y: -50 } : { x: 23, y: -46 }
+      assert.equal(moved.b.x - moved.a.x, wall.b.x - wall.a.x)
+      assert.equal(moved.b.y - moved.a.y, wall.b.y - wall.a.y)
+      assert.equal(moved.thickness, wall.thickness)
+      const before = wallPoint(wall, 140), after = wallPoint(moved, 140)
+      assert.ok(Math.abs(after.x - before.x - delta.x) < 1e-8)
+      assert.ok(Math.abs(after.y - before.y - delta.y) < 1e-8)
+      assert.deepEqual(moved.a, { x: wall.a.x + delta.x, y: wall.a.y + delta.y })
+    }
+  }
+})
+
+test('wall translations clamp the whole segment at coordinate limits and ignore invalid movement', () => {
+  const wall = { id: 'w', a: { x: 9900, y: -9990 }, b: { x: 9990, y: -9800 }, thickness: 12 }
+  const moved = translateWall(wall, { x: 50, y: -40 }, true)
+  assert.deepEqual(moved.a, { x: 9910, y: -10000 })
+  assert.deepEqual(moved.b, { x: 10000, y: -9810 })
+  assert.equal(translateWall(wall, { x: 2, y: 4 }, true), wall)
+  assert.equal(translateWall(wall, { x: NaN, y: 0 }, false), wall)
+})
 
 test('sample floor plan starts without collisions and round-trips exactly', () => {
   const p = initialPlan(); for (const i of p.items) assert.equal(collision(i, p), null, i.name)

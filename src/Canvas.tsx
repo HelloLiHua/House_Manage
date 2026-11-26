@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { Minus, Plus, Maximize, MousePointer2, Hand, Pentagon, DoorOpen, PanelsLeftBottom, Ruler, SquareDashed, RotateCcw, RotateCw } from 'lucide-react'
 import type { Plan, Point, Furniture, Wall, Room } from './model'
-import { distance, wallPoint, wallPieces, projectOnWall, corners, collision, overlaps } from './geometry'
+import { distance, wallPoint, wallPieces, projectOnWall, corners, collision, overlaps, translateWall } from './geometry'
 import { FurnitureShape } from './FurnitureShape'
 import DoorShape from './DoorShape'
 import CompassDial from './CompassDial'
@@ -18,6 +18,7 @@ type Props = {
   onOrientation: () => void;
   onNorthAngle: (angle: number) => void; onOrientationLock: (locked: boolean) => void;
   onDragStart: () => void; onMove: (item: Furniture) => void; onRotate: (degrees: number) => void;
+  onWallMove: (wall: Wall) => void;
   onDraw: (a: Point, b: Point, type: 'wall' | 'room') => void; onDoor: (wall: Wall, offset: number) => void;
 }
 const tools = [
@@ -36,7 +37,10 @@ export default function Canvas(p: Props) {
   const [view, setView] = useState({ x: 480, y: 325, scale: .65 })
   const [draft, setDraft] = useState<{ a: Point; b: Point; type: 'wall' | 'room' | 'measure' } | null>(null)
   const [measurement, setMeasurement] = useState<{ a: Point; b: Point } | null>(null)
-  const drag = useRef<{ type: 'item'; item: Furniture; offset: Point } | { type: 'pan'; start: Point; view: typeof view } | { type: 'draw'; a: Point; kind: 'wall' | 'room' | 'measure' } | null>(null)
+  const [wallPreview, setWallPreview] = useState<{ wall: Wall; base: Plan } | null>(null)
+  const visiblePlan = wallPreview?.base === p.plan && p.tool === 'select' && p.mode === 'design'
+    ? { ...p.plan, walls: p.plan.walls.map(w => w.id === wallPreview.wall.id ? wallPreview.wall : w) } : p.plan
+  const drag = useRef<{ type: 'item'; item: Furniture; offset: Point } | { type: 'pan'; start: Point; view: typeof view } | { type: 'draw'; a: Point; kind: 'wall' | 'room' | 'measure' } | { type: 'wall'; wall: Wall; next: Wall; base: Plan; start: Point; screen: Point; pointerId: number; moved: boolean } | null>(null)
   const drawLatest = useRef(draft)
   const activeItem = p.plan.items.find(i => p.selection?.type === 'item' && i.id === p.selection.id)
   const viewWidth = size.width / view.scale, viewHeight = size.height / view.scale
@@ -69,6 +73,7 @@ export default function Canvas(p: Props) {
     if (!svg) return
     function wheel(e: WheelEvent) {
       e.preventDefault()
+      if (drag.current?.type === 'wall') return
       const point = world(e)
       setView(v => {
         const scale = Math.max(.12, Math.min(3, v.scale * Math.exp(-e.deltaY * .0015)))
@@ -79,8 +84,25 @@ export default function Canvas(p: Props) {
     return () => svg.removeEventListener('wheel', wheel)
   }, [])
 
+  function cancelWallDrag() {
+    const d = drag.current
+    if (d?.type !== 'wall') return
+    drag.current = null; setWallPreview(null)
+    if (svgRef.current?.hasPointerCapture(d.pointerId)) svgRef.current.releasePointerCapture(d.pointerId)
+  }
+  useEffect(() => {
+    function keyboard(e: KeyboardEvent) {
+      if (drag.current?.type !== 'wall') return
+      if (e.key === 'Escape') { cancelWallDrag(); e.preventDefault(); e.stopPropagation() }
+      else if (e.ctrlKey || e.metaKey || ['v', 'h', 'b', 'w', 'd', 's', 'm', 'delete', 'backspace'].includes(e.key.toLowerCase())) cancelWallDrag()
+    }
+    window.addEventListener('keydown', keyboard, true)
+    window.addEventListener('blur', cancelWallDrag)
+    return () => { window.removeEventListener('keydown', keyboard, true); window.removeEventListener('blur', cancelWallDrag) }
+  }, [])
+
   function start(e: ReactPointerEvent<SVGSVGElement>) {
-    if (e.button !== 0 && e.button !== 1) return
+    if (drag.current || (e.button !== 0 && e.button !== 1)) return
     if (p.tool === 'pan' || e.button === 1 || e.altKey) {
       drag.current = { type: 'pan', start: { x: e.clientX, y: e.clientY }, view }; e.currentTarget.setPointerCapture(e.pointerId); return
     }
@@ -95,13 +117,30 @@ export default function Canvas(p: Props) {
     } else if (e.target === e.currentTarget || (e.target as Element).getAttribute('data-background')) p.onSelect(null)
   }
   function startItem(e: ReactPointerEvent<SVGGElement>, item: Furniture) {
-    if (p.tool !== 'select' || e.button !== 0 || e.altKey) return
+    if (drag.current || p.tool !== 'select' || e.button !== 0 || e.altKey) return
     e.stopPropagation(); p.onSelect({ type: 'item', id: item.id }); p.onDragStart()
     const point = world(e); drag.current = { type: 'item', item, offset: { x: point.x - item.x, y: point.y - item.y } }
     svgRef.current?.setPointerCapture(e.pointerId)
   }
+  function startWall(e: ReactPointerEvent<SVGGElement>, wall: Wall) {
+    if (drag.current || !e.isPrimary || e.altKey || e.button !== 0 || p.mode !== 'design') return
+    if (p.tool === 'door' || p.tool === 'sliding-door') { e.stopPropagation(); p.onDoor(wall, projectOnWall(world(e), wall)); return }
+    if (p.tool !== 'select') return
+    e.stopPropagation(); p.onSelect({ type: 'wall', id: wall.id })
+    drag.current = { type: 'wall', wall, next: wall, base: p.plan, start: world(e), screen: { x: e.clientX, y: e.clientY }, pointerId: e.pointerId, moved: false }
+    svgRef.current?.setPointerCapture(e.pointerId)
+  }
   function move(e: ReactPointerEvent<SVGSVGElement>) {
     const d = drag.current; if (!d) return
+    if (d.type === 'wall') {
+      if (e.pointerId !== d.pointerId) return
+      if (p.mode !== 'design' || p.tool !== 'select' || p.plan !== d.base) { cancelWallDrag(); return }
+      if (!d.moved && Math.hypot(e.clientX - d.screen.x, e.clientY - d.screen.y) < 3) return
+      d.moved = true
+      const point = world(e)
+      d.next = translateWall(d.wall, { x: point.x - d.start.x, y: point.y - d.start.y }, p.snap)
+      setWallPreview({ wall: d.next, base: d.base }); return
+    }
     if (d.type === 'pan') { setView({ ...d.view, x: d.view.x - (e.clientX - d.start.x) / view.scale, y: d.view.y - (e.clientY - d.start.y) / view.scale }); return }
     if (d.type === 'item') {
       const w = world(e), point = { x: w.x - d.offset.x, y: w.y - d.offset.y }
@@ -114,11 +153,21 @@ export default function Canvas(p: Props) {
   }
   function stop(e: ReactPointerEvent<SVGSVGElement>) {
     const d = drag.current, latest = drawLatest.current
+    if (d?.type === 'wall') {
+      if (e.pointerId !== d.pointerId) return
+      if (d.moved && d.next !== d.wall && p.mode === 'design' && p.tool === 'select' && p.plan === d.base) p.onWallMove(d.next)
+      setWallPreview(null)
+    }
     if (d?.type === 'draw' && latest) {
       if (d.kind === 'measure') setMeasurement({ a: d.a, b: latest.b })
       else p.onDraw(d.a, latest.b, d.kind)
     }
     drag.current = null; drawLatest.current = null; setDraft(null)
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+  function cancel(e: ReactPointerEvent<SVGSVGElement>) {
+    if (drag.current?.type === 'wall' && e.pointerId !== drag.current.pointerId) return
+    drag.current = null; drawLatest.current = null; setDraft(null); setWallPreview(null)
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
   function dimension(a: Point, b: Point, label: string, key?: string) {
@@ -137,14 +186,14 @@ export default function Canvas(p: Props) {
     }
     return r.y + r.depth / 2
   }
-  return <div className={`canvas-shell tool-${p.tool} ${p.mode === 'move' ? 'moving-mode' : ''}`} ref={boxRef}>
+  return <div className={`canvas-shell tool-${p.tool} ${p.mode === 'move' ? 'moving-mode' : ''} ${visiblePlan !== p.plan ? 'wall-dragging' : ''}`} ref={boxRef}>
     <div className="canvas-label"><span className="live-dot" /> {p.mode === 'move' ? '搬运试验' : '二维平面'}<span className="label-divider" />单位：cm</div>
     <div className="compass-widget">
       <CompassDial className="compass-control" testId="canvas-compass" angle={p.plan.northAngle ?? 0} locked={p.plan.orientationLocked ?? true} disabled={p.mode === 'move'} onChange={p.onNorthAngle} onOpen={p.onOrientation} />
       <OrientationToggle locked={p.plan.orientationLocked ?? true} disabled={p.mode === 'move'} onChange={p.onOrientationLock} />
     </div>
     <div className="floating-tools" aria-label="绘图工具栏">{tools.map(t => <button key={t.id} disabled={p.mode === 'move' && !['select', 'pan', 'measure'].includes(t.id)} aria-label={t.name} title={`${t.name} · ${t.key}`} className={p.tool === t.id ? 'active' : ''} onClick={() => { p.onTool(t.id); setMeasurement(null) }}><t.icon size={19} /></button>)}</div>
-    <svg ref={svgRef} className="floor-canvas" data-testid="floor-canvas" aria-label="房屋平面布置画布" viewBox={`${view.x - viewWidth / 2} ${view.y - viewHeight / 2} ${viewWidth} ${viewHeight}`} onPointerDown={start} onPointerMove={move} onPointerUp={stop} onPointerCancel={() => { drag.current = null; drawLatest.current = null; setDraft(null) }}>
+    <svg ref={svgRef} className="floor-canvas" data-testid="floor-canvas" aria-label="房屋平面布置画布" viewBox={`${view.x - viewWidth / 2} ${view.y - viewHeight / 2} ${viewWidth} ${viewHeight}`} onPointerDown={start} onPointerMove={move} onPointerUp={stop} onPointerCancel={cancel} onLostPointerCapture={e => { if (drag.current?.type === 'wall') cancel(e) }}>
       <defs>
         <pattern id="grid-small" width={10} height={10} patternUnits="userSpaceOnUse"><circle cx={0} cy={0} r={.65} fill="#cacdc4" /></pattern>
         <pattern id="grid-large" width={50} height={50} patternUnits="userSpaceOnUse"><rect width={50} height={50} fill="url(#grid-small)" /><path d="M 50 0 H 0 V 50" fill="none" stroke="#dfe1d9" strokeWidth={.45} /></pattern>
@@ -160,16 +209,12 @@ export default function Canvas(p: Props) {
       </g>)}
       {p.showDims && p.plan.rooms.map(r => dimension({ x: r.x, y: r.y - 37 }, { x: r.x + r.width, y: r.y - 37 }, `${r.width}`, r.id))}
       {p.showDims && p.plan.rooms[0] && dimension({ x: p.plan.rooms[0].x - 37, y: p.plan.rooms[0].y }, { x: p.plan.rooms[0].x - 37, y: p.plan.rooms[0].y + p.plan.rooms[0].depth }, `${p.plan.rooms[0].depth}`)}
-      {p.plan.walls.map(w => <g key={w.id} onPointerDown={e => {
-        if (e.altKey || e.button !== 0) return
-        if (p.tool === 'door' || p.tool === 'sliding-door') { e.stopPropagation(); p.onDoor(w, projectOnWall(world(e), w)) }
-        else if (p.tool === 'select' && p.mode === 'design') { e.stopPropagation(); p.onSelect({ type: 'wall', id: w.id }) }
-      }}>
-        <line x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y} stroke="transparent" strokeWidth={Math.max(20, w.thickness)} />
-        {wallPieces(w, p.plan).map((seg, n) => { const a = wallPoint(w, seg.from), b = wallPoint(w, seg.to); return <line key={n} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={p.selection?.id === w.id ? '#879765' : '#60695f'} strokeWidth={w.thickness} strokeLinecap="butt" /> })}
+      {visiblePlan.walls.map(w => <g key={w.id} data-testid={`wall-${w.id}`} className="wall-shape" onPointerDown={e => startWall(e, w)}>
+        <line x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y} stroke="transparent" strokeWidth={Math.max(14 / view.scale, w.thickness)} />
+        {wallPieces(w, visiblePlan).map((seg, n) => { const a = wallPoint(w, seg.from), b = wallPoint(w, seg.to); return <line key={n} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={p.selection?.id === w.id ? '#879765' : '#60695f'} strokeWidth={w.thickness} strokeLinecap="butt" /> })}
       </g>)}
       {p.plan.doors.map(d => {
-        const w = p.plan.walls.find(v => v.id === d.wallId); if (!w) return null
+        const w = visiblePlan.walls.find(v => v.id === d.wallId); if (!w) return null
         const a = wallPoint(w, d.offset - d.width / 2), angle = Math.atan2(w.b.y - w.a.y, w.b.x - w.a.x) * 180 / Math.PI
         return <g key={d.id} data-testid={`door-${d.id}`} data-door-type={d.type ?? 'swing'} transform={`translate(${a.x},${a.y}) rotate(${angle})`} className="door-shape" onPointerDown={e => { if (p.tool === 'select' && p.mode === 'design' && !e.altKey && e.button === 0) { e.stopPropagation(); p.onSelect({ type: 'door', id: d.id }) } }}>
           <DoorShape door={d} wall={w} selected={p.selection?.id === d.id} />
@@ -178,7 +223,7 @@ export default function Canvas(p: Props) {
       {p.route.length > 1 && <g pointerEvents="none"><polyline points={p.route.map(v => `${v.x},${v.y}`).join(' ')} fill="none" stroke="#779850" strokeWidth={3} strokeDasharray="7 5" /><circle cx={p.route[0].x} cy={p.route[0].y} r={7} fill="#fff" stroke="#779850" strokeWidth={3} /></g>}
       {p.plan.items.map(item => {
         const selected = p.selection?.type === 'item' && p.selection.id === item.id
-        const hit = collision(item, p.plan)
+        const hit = collision(item, visiblePlan)
         return <g key={item.id} data-testid={`item-${item.id}`} data-item-name={item.name} transform={`translate(${item.x},${item.y}) rotate(${item.rotation})`} onPointerDown={e => startItem(e, item)} className={p.tool === 'select' ? 'furniture-draggable' : ''}>
           <g filter="url(#item-shadow)"><FurnitureShape item={item} stroke={hit ? '#ba7160' : undefined} /></g>
           {selected && <g pointerEvents="none">

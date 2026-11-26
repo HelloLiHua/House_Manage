@@ -1,6 +1,14 @@
 import type { Point, Furniture, Plan, Wall, Door } from './model'
 
 export const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
+export function translateWall(wall: Wall, delta: Point, snap: boolean): Wall {
+  if (![delta.x, delta.y].every(Number.isFinite)) return wall
+  const step = snap ? 10 : 1
+  const shift = (value: number, a: number, b: number) => Math.max(-10000 - Math.min(a, b), Math.min(10000 - Math.max(a, b), Math.round(value / step) * step))
+  const x = shift(delta.x, wall.a.x, wall.b.x), y = shift(delta.y, wall.a.y, wall.b.y)
+  if (x === 0 && y === 0) return wall
+  return { ...wall, a: { x: wall.a.x + x, y: wall.a.y + y }, b: { x: wall.b.x + x, y: wall.b.y + y } }
+}
 export function wallPoint(w: Wall, offset: number): Point {
   const l = distance(w.a, w.b)
   return { x: w.a.x + (w.b.x - w.a.x) * offset / l, y: w.a.y + (w.b.y - w.a.y) * offset / l }
