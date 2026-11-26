@@ -1,6 +1,6 @@
 import type { Plan } from './model'
 
-export type Selection = { type: 'item' | 'wall' | 'door' | 'room'; id: string }
+export type Selection = { type: 'item' | 'wall' | 'door' | 'window' | 'room'; id: string }
   | { type: 'items'; ids: string[]; id?: never } | null
 
 export function itemIds(selection: Selection): string[] {
@@ -23,6 +23,6 @@ export function validSelection(selection: Selection, plan: Plan): Selection {
     const ids = selection.ids.filter(id => plan.items.some(item => item.id === id))
     return ids.length === selection.ids.length && ids.length > 1 ? selection : selectItems(ids)
   }
-  const entries = selection.type === 'item' ? plan.items : selection.type === 'wall' ? plan.walls : selection.type === 'door' ? plan.doors : plan.rooms
+  const entries = selection.type === 'item' ? plan.items : selection.type === 'wall' ? plan.walls : selection.type === 'door' ? plan.doors : selection.type === 'window' ? plan.windows ?? [] : plan.rooms
   return entries.some(entry => entry.id === selection.id) ? selection : null
 }

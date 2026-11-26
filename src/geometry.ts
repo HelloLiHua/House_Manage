@@ -1,4 +1,4 @@
-import type { Point, Furniture, Plan, Wall, Door } from './model'
+import type { Point, Furniture, Plan, Wall, Door, PlanWindow } from './model'
 
 export const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
 // Apply one bounded, snapped translation to the whole set, preserving spacing.
@@ -50,8 +50,31 @@ export function overlaps(a: Point[], b: Point[]): boolean {
   }
   return true
 }
-export function wallPieces(w: Wall, plan: Plan): { from: number; to: number }[] {
-  const doors = plan.doors.filter(d => d.wallId === w.id).sort((a, b) => a.offset - b.offset)
+export function wallOpenings(plan: Plan): (Door | PlanWindow)[] { return [...plan.doors, ...(plan.windows ?? [])] }
+
+export function openingFits(plan: Plan, wall: Wall, opening: Pick<Door, 'id' | 'wallId' | 'width' | 'offset'>, gap = 0): boolean {
+  return opening.wallId === wall.id && Number.isFinite(opening.offset) && Number.isFinite(opening.width) && opening.width > 0
+    && opening.offset >= opening.width / 2 && opening.offset + opening.width / 2 <= distance(wall.a, wall.b)
+    && !wallOpenings(plan).some(other => other.id !== opening.id && other.wallId === wall.id && Math.abs(other.offset - opening.offset) < (other.width + opening.width) / 2 + gap)
+}
+
+// Keep the window between its neighbours; dragging cannot jump over a doorway.
+export function slideWindow(window: PlanWindow, wall: Wall, plan: Plan, delta: number, snap: boolean): PlanWindow {
+  if (!Number.isFinite(delta)) return window
+  let min = window.width / 2, max = distance(wall.a, wall.b) - window.width / 2
+  for (const other of wallOpenings(plan)) {
+    if (other.id === window.id || other.wallId !== window.wallId) continue
+    const separation = (window.width + other.width) / 2
+    if (other.offset < window.offset) min = Math.max(min, other.offset + separation)
+    else max = Math.min(max, other.offset - separation)
+  }
+  const step = snap ? 10 : 1, offset = Math.max(min, Math.min(max, window.offset + Math.round(delta / step) * step))
+  return offset === window.offset ? window : { ...window, offset }
+}
+
+// Windows cut the drawing only. Ground-level collision detection keeps the wall solid.
+export function wallPieces(w: Wall, plan: Plan, drawing = false): { from: number; to: number }[] {
+  const doors = (drawing ? wallOpenings(plan) : plan.doors).filter(d => d.wallId === w.id).sort((a, b) => a.offset - b.offset)
   const pieces = []; let start = 0
   for (const d of doors) {
     const end = Math.max(0, d.offset - d.width / 2)
@@ -146,7 +169,7 @@ export function sweep(from: Furniture, to: Furniture, plan: Plan, clearance = 0)
 }
 
 // Merge collinear walls so shared room boundaries never leave a hidden wall
-// across a doorway. Preserve door positions when the wall origin changes.
+// across a doorway. Preserve door and window positions when the wall origin changes.
 export function integrateWall(plan: Plan, added: Wall): Plan {
   const horizontal = Math.abs(added.a.y - added.b.y) < 0.01
   const vertical = Math.abs(added.a.x - added.b.x) < 0.01
@@ -165,7 +188,7 @@ export function integrateWall(plan: Plan, added: Wall): Plan {
   const point = (v: number) => horizontal ? { x: v, y: added.a.y } : { x: added.a.x, y: v }
   const original = plan.walls.find(w => matches.has(w.id))
   const wall = { ...added, id: original?.id ?? added.id, thickness: original?.thickness ?? added.thickness, a: point(lo), b: point(hi) }
-  return {
+  const next: Plan = {
     ...plan, walls: [...plan.walls.filter(w => !matches.has(w.id)), wall],
     doors: plan.doors.map(d => {
       if (!matches.has(d.wallId)) return d
@@ -177,5 +200,12 @@ export function integrateWall(plan: Plan, added: Wall): Plan {
         : {}
       return { ...d, ...orientation, wallId: wall.id, offset: coord(wallPoint(old, d.offset)) - lo }
     }),
+    ...(plan.windows ? { windows: plan.windows.map(window => {
+      if (!matches.has(window.wallId)) return window
+      const old = plan.walls.find(w => w.id === window.wallId)!
+      return { ...window, wallId: wall.id, offset: coord(wallPoint(old, window.offset)) - lo }
+    }) } : {}),
   }
+  if (wallOpenings(next).some(opening => opening.wallId === wall.id && !openingFits(next, wall, opening))) throw new Error('合并墙体会让门窗重叠，请先调整门窗位置。')
+  return next
 }

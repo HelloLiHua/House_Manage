@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowDownToLine, ArrowRight, ArrowUpFromLine, Box, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Copy, DoorOpen, FilePlus2, FolderOpen, Grid2X2, House, Info, Layers, LayoutTemplate, MousePointer2, Package, PanelLeftClose, PanelsLeftBottom, Pencil, Play, Plus, Redo2, RotateCcw, RotateCw, Route, Ruler, Search, Settings2, ShieldCheck, Sofa, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, ArrowUpFromLine, Box, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Columns2, Copy, DoorOpen, FilePlus2, FolderOpen, Grid2X2, House, Info, Layers, LayoutTemplate, MousePointer2, Package, PanelLeftClose, PanelsLeftBottom, Pencil, Play, Plus, Redo2, RotateCcw, RotateCw, Route, Ruler, Search, Settings2, ShieldCheck, Sofa, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
 import Canvas from './Canvas'
 import OrientationSettings from './OrientationSettings'
 import SwingDoorSettings from './SwingDoorSettings'
 import type { Selection, Tool, RoutePoint } from './Canvas'
 import { FurnitureThumbnail } from './FurnitureShape'
-import { collision, distance, doorPassage, integrateWall, sweep, translateItems } from './geometry'
+import { collision, distance, doorPassage, integrateWall, sweep, translateItems, wallOpenings, openingFits } from './geometry'
 import { itemIds, selectItems, toggleItem, validSelection } from './selection'
 import { emptyPlan, initialPlan, parsePlan, templates, uid } from './model'
-import type { Plan, Furniture, Point, Template, Wall, Door } from './model'
+import type { Plan, Furniture, Point, Template, Wall, Door, PlanWindow } from './model'
 import { STORAGE_KEY, usePlan } from './usePlan'
 import './App.css'
 
@@ -62,6 +62,7 @@ function App() {
   const selected = selection?.type === 'item' ? plan.items.find(i => i.id === selection.id) : undefined
   const selectedWall = selection?.type === 'wall' ? plan.walls.find(w => w.id === selection.id) : undefined
   const selectedDoor = selection?.type === 'door' ? plan.doors.find(d => d.id === selection.id) : undefined
+  const selectedWindow = selection?.type === 'window' ? plan.windows?.find(w => w.id === selection.id) : undefined
   const selectedRoom = selection?.type === 'room' ? plan.rooms.find(r => r.id === selection.id) : undefined
   const selectedHit = selected ? collision(selected, plan) : null
   const hits = plan.items.filter(i => collision(i, plan)).length
@@ -175,10 +176,14 @@ function App() {
   function remove() {
     if (!selection || locked) return
     const { type, id } = selection
-    setPlan(p => ({ ...p, items: selectedIds.size ? p.items.filter(i => !selectedIds.has(i.id)) : p.items, rooms: type === 'room' ? p.rooms.filter(r => r.id !== id) : p.rooms, walls: type === 'wall' ? p.walls.filter(w => w.id !== id) : p.walls, doors: p.doors.filter(d => !(type === 'door' && d.id === id) && !(type === 'wall' && d.wallId === id)) }))
+    setPlan(p => ({ ...p, items: selectedIds.size ? p.items.filter(i => !selectedIds.has(i.id)) : p.items, rooms: type === 'room' ? p.rooms.filter(r => r.id !== id) : p.rooms, walls: type === 'wall' ? p.walls.filter(w => w.id !== id) : p.walls, doors: p.doors.filter(d => !(type === 'door' && d.id === id) && !(type === 'wall' && d.wallId === id)), ...(p.windows ? { windows: p.windows.filter(w => !(type === 'window' && w.id === id) && !(type === 'wall' && w.wallId === id)) } : {}) }))
     setSelection(null); if (type === 'room') setToast('已移除房间标注。墙体可单独选中删除。')
   }
   function draw(a: Point, b: Point, type: 'wall' | 'room') {
+    try { drawPlan(a, b, type) }
+    catch (error) { setToast(error instanceof Error ? error.message : '绘制失败，请检查墙体和门窗位置') }
+  }
+  function drawPlan(a: Point, b: Point, type: 'wall' | 'room') {
     if (locked) return
     if ([a.x, a.y, b.x, b.y].some(v => Math.abs(v) > 10000)) { setToast('绘制范围应在 ±10000 cm 内'); return }
     if (type === 'wall') {
@@ -196,18 +201,38 @@ function App() {
     }
   }
   function addDoor(wall: Wall, offset: number) {
+    if (locked) return
     const length = distance(wall.a, wall.b), sliding = tool === 'sliding-door', width = sliding ? Math.min(180, Math.floor((length - 10) / 10) * 10) : 90
     if (width < 40 || length < width + 10) { setToast('墙体太短，至少需要 100 cm 才能添加此门洞'); return }
     offset = Math.max(width / 2 + 5, Math.min(length - width / 2 - 5, Math.round(offset / 5) * 5))
-    if (plan.doors.some(d => d.wallId === wall.id && Math.abs(d.offset - offset) < (d.width + width) / 2 + 2)) { setToast('门洞与现有门洞重叠，请换一个位置'); return }
     const door: Door = { id: uid(), wallId: wall.id, offset, width, height: 210, flip: false, ...(sliding ? { type: 'sliding', slidingStyle: 'bypass', slideDirection: 'end', opening: 100, panelThickness: 4 } as const : {}) }
+    if (!openingFits(plan, wall, door, 2)) { setToast('门洞与现有门窗重叠，请换一个位置'); return }
     setPlan(p => ({ ...p, doors: [...p.doors, door] })); setSelection({ type: 'door', id: door.id }); setTool('select')
   }
+  function addWindow(wall: Wall, offset: number) {
+    if (locked) return
+    if ((plan.windows?.length ?? 0) >= 500) { setToast('每个方案最多设置 500 扇窗户'); return }
+    const length = distance(wall.a, wall.b), width = Math.min(120, Math.floor((length - 10) / 5) * 5)
+    if (width < 20) { setToast('墙体太短，至少需要 30 cm 才能添加窗户'); return }
+    offset = Math.max(width / 2 + 5, Math.min(length - width / 2 - 5, Math.round(offset / 5) * 5))
+    const window: PlanWindow = { id: uid(), wallId: wall.id, offset, width, height: 150, sillHeight: 90 }
+    if (!openingFits(plan, wall, window, 2)) { setToast('窗户与现有门窗重叠，请换一个位置'); return }
+    setPlan(p => ({ ...p, windows: [...(p.windows ?? []), window] })); setSelection({ type: 'window', id: window.id }); setTool('select')
+  }
+  function commitWindow(window: PlanWindow) {
+    if (locked) return
+    const p = current.current, previous = p.windows?.find(w => w.id === window.id), wall = p.walls.find(w => w.id === window.wallId)
+    if (!previous || !wall) return
+    if (!Number.isFinite(window.height) || !Number.isFinite(window.sillHeight) || window.width < 20 || window.width > 1000 || window.height < 20 || window.height > 1000 || window.sillHeight < 0 || window.sillHeight > 1000 || !openingFits(p, wall, window)) { setToast('窗户尺寸或位置无效，不能超出墙体或与其他门窗重叠'); return }
+    if (previous.offset === window.offset && previous.width === window.width && previous.height === window.height && previous.sillHeight === window.sillHeight) return
+    setPlan({ ...p, windows: p.windows!.map(w => w.id === window.id ? window : w) })
+  }
+  function updateWindow(patch: Partial<PlanWindow>) { if (selectedWindow) commitWindow({ ...selectedWindow, ...patch }) }
   function updateWall(patch: Partial<Wall>) {
     if (!selectedWall) return
     const wall = { ...selectedWall, ...patch }, length = distance(wall.a, wall.b)
     if (length < 1 || length > 20000 || [wall.a.x, wall.a.y, wall.b.x, wall.b.y].some(v => Math.abs(v) > 10000)) { setToast('墙体端点不能重合，坐标范围为 ±10000 cm'); return }
-    if (plan.doors.some(d => d.wallId === wall.id && d.offset + d.width / 2 > length)) { setToast('修改后门洞会超出墙体，请先调整门洞'); return }
+    if (wallOpenings(plan).some(d => d.wallId === wall.id && d.offset + d.width / 2 > length)) { setToast('修改后门窗会超出墙体，请先调整门窗'); return }
     setPlan(p => ({ ...p, walls: p.walls.map(w => w.id === wall.id ? wall : w) }))
   }
   function moveWall(wall: Wall) {
@@ -221,7 +246,7 @@ function App() {
     if (!selectedDoor) return
     if (locked) return
     const next = { ...selectedDoor, ...patch }, wall = plan.walls.find(w => w.id === next.wallId)!
-    if (next.offset - next.width / 2 < 0 || next.offset + next.width / 2 > distance(wall.a, wall.b) || plan.doors.some(d => d.id !== next.id && d.wallId === next.wallId && Math.abs(d.offset - next.offset) < (d.width + next.width) / 2)) { setToast('门洞超出墙体或与其他门洞重叠'); return }
+    if (!openingFits(plan, wall, next)) { setToast('门洞超出墙体或与其他门窗重叠'); return }
     setPlan(p => ({ ...p, doors: p.doors.map(d => d.id === next.id ? next : d) }), record)
   }
   function startSimulation() {
@@ -287,7 +312,7 @@ function App() {
       if (key === 'e') rotate(15)
       if (key === 'escape') { setTool('select'); if (!locked) setSelection(null); setExportMenu(false) }
       if (key === '/') { e.preventDefault(); document.querySelector<HTMLInputElement>('[aria-label="搜索家具"]')?.focus() }
-      const shortcuts: Record<string, Tool> = { v: 'select', h: 'pan', b: 'room', w: 'wall', d: 'door', s: 'sliding-door', m: 'measure' }
+      const shortcuts: Record<string, Tool> = { v: 'select', h: 'pan', b: 'room', w: 'wall', d: 'door', s: 'sliding-door', n: 'window', m: 'measure' }
       if (shortcuts[key] && (!locked || ['v', 'h', 'm'].includes(key))) setTool(shortcuts[key])
       if (selectedItems.length && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key)) {
         e.preventDefault()
@@ -301,7 +326,7 @@ function App() {
   })
 
   const filtered = templates.filter(t => t.name.includes(search) && (category === '全部' || (category === '客厅' && ['sofa', 'table', 'plant'].includes(t.kind)) || (category === '卧室' && ['bed', 'cabinet'].includes(t.kind)) || (category === '书房' && ['table', 'chair', 'cabinet'].includes(t.kind))))
-  const hint = { select: selection?.type === 'wall' ? '拖动墙体整体移动 · 门随墙移动 · Esc 取消拖动' : selectedItems.length > 1 ? `已选 ${selectedItems.length} 件 · 拖动一起移动 · Shift 点击增减` : '空白处拖动框选 · Shift 点击多选 · 拖动物件或墙体移动', room: '拖动绘制矩形房间 · 相邻墙体自动合并', wall: '拖动绘制墙体 · 按住 Shift 绘制斜墙', door: '点击墙体添加门洞 · 默认净宽 90 cm', 'sliding-door': '点击墙体添加推拉门 · 可设置双扇或单扇、开合程度', pan: '拖动画布平移 · 滚轮缩放', measure: '拖动两点测量距离 · 按 V 返回选择' }[tool]
+  const hint = { select: selection?.type === 'window' ? '沿墙拖动窗户 · 右侧可设置尺寸和窗台高度 · Esc 取消拖动' : selection?.type === 'wall' ? '拖动墙体整体移动 · 门窗随墙移动 · Esc 取消拖动' : selectedItems.length > 1 ? `已选 ${selectedItems.length} 件 · 拖动一起移动 · Shift 点击增减` : '空白处拖动框选 · Shift 点击多选 · 拖动物件或墙体移动', room: '拖动绘制矩形房间 · 相邻墙体自动合并', wall: '拖动绘制墙体 · 按住 Shift 绘制斜墙', door: '点击墙体添加门洞 · 默认净宽 90 cm', 'sliding-door': '点击墙体添加推拉门 · 可设置双扇或单扇、开合程度', window: '点击墙体添加窗户 · 可拖动位置、设置宽高和窗台高度', pan: '拖动画布平移 · 滚轮缩放', measure: '拖动两点测量距离 · 按 V 返回选择' }[tool]
 
   return <div className="app">
     <header className="app-header">
@@ -325,7 +350,7 @@ function App() {
       <input ref={fileRef} type="file" accept=".json,application/json" aria-label="导入方案文件" hidden onChange={e => { void importFile(e.target.files?.[0]); e.currentTarget.value = '' }} />
       <section className="editor-panel">
         <div className="editor-topline"><div><span className="plan-dot" />{locked ? `正在试搬 · ${selected?.name}` : '户型平面图'}<span className="view-tag">俯视图</span></div><div className="canvas-toggles"><button role="switch" aria-checked={snap} className={snap ? 'on' : ''} onClick={() => setSnap(v => !v)}><span className="mini-check">{snap && <Check size={10} />}</span>网格吸附</button><button role="switch" aria-checked={showDims} className={showDims ? 'on' : ''} onClick={() => setShowDims(v => !v)}><span className="mini-check">{showDims && <Check size={10} />}</span>尺寸标注</button></div></div>
-        <Canvas plan={plan} selection={selection} tool={tool} mode={mode} snap={snap} showDims={showDims} fitKey={fitKey} route={route} blocked={!!blocked} clearance={clearance} onOrientation={() => { if (!locked) setModal('orientation') }} onNorthAngle={changeNorthAngle} onOrientationLock={changeOrientationLock} onSelect={select} onTool={setTool} onMove={onMove} onItemsMove={moveItems} onWallMove={moveWall} onRotate={rotate} onDraw={draw} onDoor={addDoor} />
+        <Canvas plan={plan} selection={selection} tool={tool} mode={mode} snap={snap} showDims={showDims} fitKey={fitKey} route={route} blocked={!!blocked} clearance={clearance} onOrientation={() => { if (!locked) setModal('orientation') }} onNorthAngle={changeNorthAngle} onOrientationLock={changeOrientationLock} onSelect={select} onTool={setTool} onMove={onMove} onItemsMove={moveItems} onWallMove={moveWall} onWindow={addWindow} onWindowMove={commitWindow} onRotate={rotate} onDraw={draw} onDoor={addDoor} />
         <div className="canvas-hint"><MousePointer2 size={13} /><span>{locked ? '拖动已选物件试搬 · Q / E 旋转 · 碰撞时自动停下' : hint}</span><span className="hint-right">滚轮缩放 <span>·</span> Alt + 拖动平移</span></div>
       </section>
       <aside className="properties-panel">
@@ -369,12 +394,18 @@ function App() {
             </div>
             <div className="info-box"><Info size={16} /><p>{selectedDoor.type === 'sliding' ? '绿色虚线是可通行开口。双扇错叠全开时净宽为总宽的一半；单扇沿墙需预留门扇停靠空间。检测包含当前门扇位置，未模拟推门动作和门框五金余量。' : '请填写实际可通过的净尺寸。搬运检测同时检查门宽与高度；平开门的门扇暂未作为障碍物。'}</p></div>
             <button className="delete-button" onClick={remove}><Trash2 size={15} />删除{selectedDoor.type === 'sliding' ? '推拉门' : '门洞'}</button>
-          </> : selectedWall ? <><div className="simple-selected"><Ruler size={28} /><h3>墙体</h3><p>拖动墙体整体移动，门随墙移动；也可输入尺寸和端点坐标。</p></div><div className="property-section"><Numeric label="墙体长度" value={distance(selectedWall.a, selectedWall.b)} min={20} max={5000} onChange={v => {
+          </> : selectedWindow ? <>
+            <div className="simple-selected window-selected"><Columns2 size={28} /><h3>窗户</h3><p>沿墙拖动调整位置，也可输入实际尺寸。</p></div>
+            <div className="property-section"><h4>窗户尺寸</h4><div className="two-fields"><Numeric label="窗户宽度" value={selectedWindow.width} min={20} max={1000} onChange={v => updateWindow({ width: v })} /><Numeric label="窗户高度" value={selectedWindow.height} min={20} max={1000} onChange={v => updateWindow({ height: v })} /></div><Numeric label="窗台高度" value={selectedWindow.sillHeight} min={0} max={1000} onChange={v => updateWindow({ sillHeight: v })} /><p className="field-note"><Info size={12} />地面到窗户底边的垂直距离</p><div className="window-top-height"><span>窗顶距地面</span><strong>{Number((selectedWindow.sillHeight + selectedWindow.height).toFixed(1))}<small> cm</small></strong></div></div>
+            <div className="property-section"><h4>沿墙位置</h4><Numeric label="窗户距墙起点（中心）" value={selectedWindow.offset} min={selectedWindow.width / 2} max={distance(plan.walls.find(w => w.id === selectedWindow.wallId)!.a, plan.walls.find(w => w.id === selectedWindow.wallId)!.b) - selectedWindow.width / 2} onChange={v => updateWindow({ offset: v })} /><p className="field-note">窗户随所在墙体移动，不能与门或其他窗户重叠。</p></div>
+            <div className="info-box"><Info size={16} /><p>窗户用于标注墙面开窗。搬运试验中视为阻挡，不能作为通道；目前不模拟开窗或从窗户搬运。</p></div>
+            <button className="delete-button" onClick={remove}><Trash2 size={15} />删除窗户</button>
+          </> : selectedWall ? <><div className="simple-selected"><Ruler size={28} /><h3>墙体</h3><p>拖动墙体整体移动，门窗随墙移动；也可输入尺寸和端点坐标。</p></div><div className="property-section"><Numeric label="墙体长度" value={distance(selectedWall.a, selectedWall.b)} min={20} max={5000} onChange={v => {
               const len = distance(selectedWall.a, selectedWall.b)
-              if (plan.doors.some(d => d.wallId === selectedWall.id && d.offset + d.width / 2 > v)) { setToast('缩短后门洞会超出墙体，请先调整门洞'); return }
+              if (wallOpenings(plan).some(d => d.wallId === selectedWall.id && d.offset + d.width / 2 > v)) { setToast('缩短后门窗会超出墙体，请先调整门窗'); return }
               const b = { x: selectedWall.a.x + (selectedWall.b.x - selectedWall.a.x) * v / len, y: selectedWall.a.y + (selectedWall.b.y - selectedWall.a.y) * v / len }
               updateWall({ b })
-            }} /><Numeric label="墙体厚度" value={selectedWall.thickness} min={1} max={100} onChange={v => updateWall({ thickness: v })} /><div className="section-heading"><h4>端点坐标</h4><span>厘米 cm</span></div><div className="two-fields"><Numeric label="起点 X" value={selectedWall.a.x} min={-10000} max={10000} onChange={v => updateWall({ a: { ...selectedWall.a, x: v } })} /><Numeric label="起点 Y" value={selectedWall.a.y} min={-10000} max={10000} onChange={v => updateWall({ a: { ...selectedWall.a, y: v } })} /></div><div className="two-fields"><Numeric label="终点 X" value={selectedWall.b.x} min={-10000} max={10000} onChange={v => updateWall({ b: { ...selectedWall.b, x: v } })} /><Numeric label="终点 Y" value={selectedWall.b.y} min={-10000} max={10000} onChange={v => updateWall({ b: { ...selectedWall.b, y: v } })} /></div><button className="secondary-button full-width" onClick={() => { setTool('door'); setToast('点击这面墙上的位置添加门洞') }}><DoorOpen size={16} />在墙体上添加门洞</button></div><div className="info-box"><Info size={16} /><p>墙体长度按中心线计算。修改端点后，相连墙体与房间区域标注需手动调整。</p></div><button className="delete-button" onClick={remove}><Trash2 size={15} />删除墙体及其门洞</button></> : selectedRoom ? <><div className="simple-selected"><LayoutTemplate size={28} /><h3>{selectedRoom.name}</h3><p>房间区域用于地面与面积标注。</p></div><div className="property-section"><label className="text-field"><span>房间名称</span><input aria-label="房间名称" maxLength={100} value={selectedRoom.name} onChange={e => setPlan(p => ({ ...p, rooms: p.rooms.map(r => r.id === selectedRoom.id ? { ...r, name: e.target.value } : r) }))} /></label><div className="room-dimensions"><span>{selectedRoom.width} × {selectedRoom.depth}<small> cm</small></span><strong>{(selectedRoom.width * selectedRoom.depth / 10000).toFixed(1)} m²</strong></div><label className="room-color">地面颜色<input aria-label="地面颜色" type="color" value={selectedRoom.color} onChange={e => setPlan(p => ({ ...p, rooms: p.rooms.map(r => r.id === selectedRoom.id ? { ...r, color: e.target.value } : r) }))} /></label></div><div className="info-box"><Info size={16} /><p>面积按绘制区域计算，未扣墙体。选择墙体可修改长度或添加门洞；删除区域标注会保留墙体。</p></div><button className="delete-button" onClick={remove}><Trash2 size={15} />删除房间标注</button></> : <div className="inspector-empty"><div><MousePointer2 size={31} strokeWidth={1.3} /></div><h3>把想法放进空间</h3><p>在画布中选择家具、墙体或门洞，查看和调整它们的参数。</p><ol><li><span>1</span>绘制房间与墙体</li><li><span>2</span>按实际尺寸摆放家具</li><li><span>3</span>试搬，找到合适的路线</li></ol><button className="secondary-button" onClick={() => setModal('help')}>查看操作指南<ArrowRight size={15} /></button></div>}
+            }} /><Numeric label="墙体厚度" value={selectedWall.thickness} min={1} max={100} onChange={v => updateWall({ thickness: v })} /><div className="section-heading"><h4>端点坐标</h4><span>厘米 cm</span></div><div className="two-fields"><Numeric label="起点 X" value={selectedWall.a.x} min={-10000} max={10000} onChange={v => updateWall({ a: { ...selectedWall.a, x: v } })} /><Numeric label="起点 Y" value={selectedWall.a.y} min={-10000} max={10000} onChange={v => updateWall({ a: { ...selectedWall.a, y: v } })} /></div><div className="two-fields"><Numeric label="终点 X" value={selectedWall.b.x} min={-10000} max={10000} onChange={v => updateWall({ b: { ...selectedWall.b, x: v } })} /><Numeric label="终点 Y" value={selectedWall.b.y} min={-10000} max={10000} onChange={v => updateWall({ b: { ...selectedWall.b, y: v } })} /></div><button className="secondary-button full-width" onClick={() => { setTool('door'); setToast('点击这面墙上的位置添加门洞') }}><DoorOpen size={16} />在墙体上添加门洞</button><button className="secondary-button full-width wall-window-action" onClick={() => { setTool('window'); setToast('点击这面墙上的位置添加窗户') }}><Columns2 size={16} />在墙体上添加窗户</button></div><div className="info-box"><Info size={16} /><p>墙体长度按中心线计算。修改端点后，相连墙体与房间区域标注需手动调整。</p></div><button className="delete-button" onClick={remove}><Trash2 size={15} />删除墙体及其门窗</button></> : selectedRoom ? <><div className="simple-selected"><LayoutTemplate size={28} /><h3>{selectedRoom.name}</h3><p>房间区域用于地面与面积标注。</p></div><div className="property-section"><label className="text-field"><span>房间名称</span><input aria-label="房间名称" maxLength={100} value={selectedRoom.name} onChange={e => setPlan(p => ({ ...p, rooms: p.rooms.map(r => r.id === selectedRoom.id ? { ...r, name: e.target.value } : r) }))} /></label><div className="room-dimensions"><span>{selectedRoom.width} × {selectedRoom.depth}<small> cm</small></span><strong>{(selectedRoom.width * selectedRoom.depth / 10000).toFixed(1)} m²</strong></div><label className="room-color">地面颜色<input aria-label="地面颜色" type="color" value={selectedRoom.color} onChange={e => setPlan(p => ({ ...p, rooms: p.rooms.map(r => r.id === selectedRoom.id ? { ...r, color: e.target.value } : r) }))} /></label></div><div className="info-box"><Info size={16} /><p>面积按绘制区域计算，未扣墙体。选择墙体可修改长度或添加门洞；删除区域标注会保留墙体。</p></div><button className="delete-button" onClick={remove}><Trash2 size={15} />删除房间标注</button></> : <div className="inspector-empty"><div><MousePointer2 size={31} strokeWidth={1.3} /></div><h3>把想法放进空间</h3><p>在画布中选择家具、墙体或门窗，查看和调整它们的参数。</p><ol><li><span>1</span>绘制房间与墙体</li><li><span>2</span>按实际尺寸摆放家具</li><li><span>3</span>试搬，找到合适的路线</li></ol><button className="secondary-button" onClick={() => setModal('help')}>查看操作指南<ArrowRight size={15} /></button></div>}
         </div>
         {selected && !locked && <div className="inspector-primary-action"><button className="primary-button" onClick={startSimulation}><Play size={14} />开始搬运试验<ArrowRight size={15} /></button></div>}
         <div className="property-footer"><ShieldCheck size={14} /><span>方案保存在当前浏览器 · 建议导出备份</span></div>
@@ -383,7 +414,7 @@ function App() {
     <footer className="status-bar"><span><span className="live-dot" />本地工作空间</span><i /><span>{plan.rooms.length} 个房间</span><span>{totalArea.toFixed(1)} m² <em>标注面积</em></span><i /><span><Box size={13} />{plan.items.length} 件物品</span><span className={`global-collision ${hits ? 'warning-color' : ''}`}>{hits ? <TriangleAlert size={13} /> : <ShieldCheck size={13} />}{hits ? `${hits} 件物品存在碰撞` : '布局无碰撞'}</span><span className="status-right">先想好，再安放。<span className="version">v0.1</span></span></footer>
     {toast && <div className="toast" role="status"><Info size={17} /><span>{toast}</span><button aria-label="关闭提示" onClick={() => setToast('')}><X size={15} /></button></div>}
     {modal && <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null) }}><div ref={modalRef} className={`modal ${modal === 'help' ? 'help-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" aria-label="关闭对话框" onClick={() => setModal(null)}><X size={20} /></button>
-      {modal === 'orientation' ? <OrientationSettings angle={plan.northAngle ?? 0} locked={plan.orientationLocked ?? true} onCancel={() => setModal(null)} onApply={(northAngle, orientationLocked) => { if (!locked && (northAngle !== (plan.northAngle ?? 0) || orientationLocked !== (plan.orientationLocked ?? true))) setPlan(p => ({ ...p, northAngle, orientationLocked })); setModal(null) }} /> : modal === 'custom' ? <><div className="modal-symbol"><Package size={27} /></div><h2 id="modal-title">每件物品，都有自己的位置</h2><p className="modal-description">输入真实尺寸，在搬进家之前先试着摆一摆。</p><label className="text-field"><span>物件名称</span><input autoFocus aria-label="自定义物件名称" maxLength={100} value={custom.name} onChange={e => setCustom(v => ({ ...v, name: e.target.value }))} /></label><div className="custom-dimensions">{[{ key: 'width', label: '长度' }, { key: 'depth', label: '宽度' }, { key: 'height', label: '高度' }].map(f => <label className="number-field" key={f.key}><span>{f.label}</span><div><input aria-label={`自定义${f.label}`} type="number" min={f.key === 'height' ? 1 : 5} max={f.key === 'height' ? 1000 : 2000} value={custom[f.key as 'width' | 'depth' | 'height']} onChange={e => setCustom(v => ({ ...v, [f.key]: e.target.value }))} /><em>cm</em></div></label>)}</div><label className="room-color">物件颜色<input type="color" aria-label="自定义物件颜色" value={custom.color} onChange={e => setCustom(v => ({ ...v, color: e.target.value }))} /></label>{customError && <p role="alert" className="form-error">{customError}</p>}<div className="modal-note"><Info size={15} /><p>物件以矩形占地轮廓显示，高度用于检查门洞净高。</p></div><button className="primary-button full-width" onClick={createCustom}><Plus size={16} />添加到画布</button></> : modal === 'new' ? <><div className="modal-symbol"><House size={28} /></div><h2 id="modal-title">开始一个新的空间</h2><p className="modal-description">当前方案会被替换，可使用撤销恢复。需要长期保留时，请先导出。</p><button className="new-plan-option" onClick={() => { setPlan(emptyPlan()); setSelection(null); setModal(null); setTool('room'); setFitKey(v => v + 1) }}><FilePlus2 size={26} /><span><strong>从空白开始</strong><small>亲手绘制房间、墙体与门洞</small></span><ArrowRight size={18} /></button><button className="new-plan-option" onClick={() => { setPlan(initialPlan()); setSelection({ type: 'item', id: 'sofa' }); setModal(null); setTool('select'); setFitKey(v => v + 1) }}><LayoutTemplate size={26} /><span><strong>使用示例户型</strong><small>一间客厅、一间卧室、一间书房</small></span><ArrowRight size={18} /></button><button className="text-button" onClick={exportJson}><ArrowDownToLine size={14} />先导出当前方案</button></> : <><div className="modal-symbol"><Sparkles size={28} /></div><h2 id="modal-title">在屏幕里，先把家安顿好</h2><p className="modal-description">所有尺寸以厘米为单位，画布按比例显示。</p><div className="help-steps"><div><span>01</span><h3>画出你的空间</h3><p>绘制房间（B）会自动创建四面墙。绘制墙体（W）默认水平或垂直，按住 Shift 可画斜墙。选中墙体能输入精确长度。</p></div><div><span>02</span><h3>给每件家具真实的尺寸</h3><p>从家具库添加，或创建自定义物件。选中物件后修改长宽高。在空白处按住拖动可框选多件，Shift 点击可增减选择，拖动其中一件即可一起移动。方向键微调 1 cm，Shift + 方向键微调 10 cm。</p></div><div><span>03</span><h3>试一条真实的搬运路线</h3><p>用门洞（D）或推拉门（S）工具在墙体上开门，设置尺寸与开度。已有门洞也可切换为推拉门。选中家具开始搬运，Q / E 每次旋转 15°，碰到障碍会停下。</p></div></div><div className="modal-note"><Info size={17} /><p>试验采用直立矩形外轮廓与门洞净高，仅验证手动走过的路径。已检测推拉门当前门扇位置；未模拟倾斜、抬起、拆卸、平开门扇和搬运人员；实际搬运还应核实这些条件。</p></div><div className="shortcut-list"><span><kbd>Ctrl Z</kbd>撤销</span><span><kbd>Ctrl D</kbd>复制物件</span><span><kbd>Delete</kbd>删除</span><span><kbd>Ctrl S</kbd>导出方案</span></div><button className="primary-button full-width" onClick={() => setModal(null)}>开始规划<ArrowRight size={15} /></button></>}
+      {modal === 'orientation' ? <OrientationSettings angle={plan.northAngle ?? 0} locked={plan.orientationLocked ?? true} onCancel={() => setModal(null)} onApply={(northAngle, orientationLocked) => { if (!locked && (northAngle !== (plan.northAngle ?? 0) || orientationLocked !== (plan.orientationLocked ?? true))) setPlan(p => ({ ...p, northAngle, orientationLocked })); setModal(null) }} /> : modal === 'custom' ? <><div className="modal-symbol"><Package size={27} /></div><h2 id="modal-title">每件物品，都有自己的位置</h2><p className="modal-description">输入真实尺寸，在搬进家之前先试着摆一摆。</p><label className="text-field"><span>物件名称</span><input autoFocus aria-label="自定义物件名称" maxLength={100} value={custom.name} onChange={e => setCustom(v => ({ ...v, name: e.target.value }))} /></label><div className="custom-dimensions">{[{ key: 'width', label: '长度' }, { key: 'depth', label: '宽度' }, { key: 'height', label: '高度' }].map(f => <label className="number-field" key={f.key}><span>{f.label}</span><div><input aria-label={`自定义${f.label}`} type="number" min={f.key === 'height' ? 1 : 5} max={f.key === 'height' ? 1000 : 2000} value={custom[f.key as 'width' | 'depth' | 'height']} onChange={e => setCustom(v => ({ ...v, [f.key]: e.target.value }))} /><em>cm</em></div></label>)}</div><label className="room-color">物件颜色<input type="color" aria-label="自定义物件颜色" value={custom.color} onChange={e => setCustom(v => ({ ...v, color: e.target.value }))} /></label>{customError && <p role="alert" className="form-error">{customError}</p>}<div className="modal-note"><Info size={15} /><p>物件以矩形占地轮廓显示，高度用于检查门洞净高。</p></div><button className="primary-button full-width" onClick={createCustom}><Plus size={16} />添加到画布</button></> : modal === 'new' ? <><div className="modal-symbol"><House size={28} /></div><h2 id="modal-title">开始一个新的空间</h2><p className="modal-description">当前方案会被替换，可使用撤销恢复。需要长期保留时，请先导出。</p><button className="new-plan-option" onClick={() => { setPlan(emptyPlan()); setSelection(null); setModal(null); setTool('room'); setFitKey(v => v + 1) }}><FilePlus2 size={26} /><span><strong>从空白开始</strong><small>亲手绘制房间、墙体与门洞</small></span><ArrowRight size={18} /></button><button className="new-plan-option" onClick={() => { setPlan(initialPlan()); setSelection({ type: 'item', id: 'sofa' }); setModal(null); setTool('select'); setFitKey(v => v + 1) }}><LayoutTemplate size={26} /><span><strong>使用示例户型</strong><small>一间客厅、一间卧室、一间书房</small></span><ArrowRight size={18} /></button><button className="text-button" onClick={exportJson}><ArrowDownToLine size={14} />先导出当前方案</button></> : <><div className="modal-symbol"><Sparkles size={28} /></div><h2 id="modal-title">在屏幕里，先把家安顿好</h2><p className="modal-description">所有尺寸以厘米为单位，画布按比例显示。</p><div className="help-steps"><div><span>01</span><h3>画出你的空间</h3><p>绘制房间（B）会自动创建四面墙。绘制墙体（W）默认水平或垂直，按住 Shift 可画斜墙。选中墙体能输入精确长度。添加窗户（N）后点击墙体，沿墙拖动或在右侧设置宽高、窗台高度。</p></div><div><span>02</span><h3>给每件家具真实的尺寸</h3><p>从家具库添加，或创建自定义物件。选中物件后修改长宽高。在空白处按住拖动可框选多件，Shift 点击可增减选择，拖动其中一件即可一起移动。方向键微调 1 cm，Shift + 方向键微调 10 cm。</p></div><div><span>03</span><h3>试一条真实的搬运路线</h3><p>用门洞（D）或推拉门（S）工具在墙体上开门，设置尺寸与开度。已有门洞也可切换为推拉门。选中家具开始搬运，Q / E 每次旋转 15°，碰到障碍会停下。</p></div></div><div className="modal-note"><Info size={17} /><p>试验采用直立矩形外轮廓与门洞净高，仅验证手动走过的路径。已检测推拉门当前门扇位置；未模拟倾斜、抬起、拆卸、平开门扇和搬运人员；实际搬运还应核实这些条件。</p></div><div className="shortcut-list"><span><kbd>Ctrl Z</kbd>撤销</span><span><kbd>Ctrl D</kbd>复制物件</span><span><kbd>Delete</kbd>删除</span><span><kbd>Ctrl S</kbd>导出方案</span></div><button className="primary-button full-width" onClick={() => setModal(null)}>开始规划<ArrowRight size={15} /></button></>}
     </div></div>}
   </div>
 }

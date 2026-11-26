@@ -4,6 +4,7 @@ export type Furniture = Point & {
   id: string; name: string; kind: FurnitureKind; width: number; depth: number; height: number; rotation: number; color: string
 }
 export type Wall = { id: string; a: Point; b: Point; thickness: number }
+export type PlanWindow = { id: string; wallId: string; offset: number; width: number; height: number; sillHeight: number }
 export type DoorType = 'swing' | 'sliding'
 export type Door = {
   id: string; wallId: string; offset: number; width: number; height: number; flip: boolean
@@ -18,6 +19,7 @@ export type Door = {
 export type Room = Point & { id: string; name: string; width: number; depth: number; color: string }
 export type Plan = {
   version: 1; name: string; rooms: Room[]; walls: Wall[]; doors: Door[]; items: Furniture[]
+  windows?: PlanWindow[] // Older version-1 plans have no windows.
   northAngle?: number // Clockwise from screen-up, in [0, 360). Older plans default to north-up.
   orientationLocked?: boolean // Absent in older plans; defaults to locked.
 }
@@ -77,6 +79,7 @@ export function parsePlan(raw: string): Plan {
   const fail = () => { throw new Error('文件格式不正确，请选择本应用导出的 .json 方案。') }
   if (!p || p.version !== 1 || typeof p.name !== 'string' || p.name.length > 100) return fail()
   for (const k of ['rooms', 'walls', 'doors', 'items']) if (!Array.isArray(p[k]) || p[k].length > 500) return fail()
+  if (p.windows !== undefined && (!Array.isArray(p.windows) || p.windows.length > 500)) return fail()
   const ids = new Set<string>()
   const id = (s: unknown) => { if (typeof s !== 'string' || !s || s.length > 100 || ids.has(s)) fail(); ids.add(s as string) }
   const n = (v: unknown, min = -10000, max = 10000) => typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max
@@ -98,8 +101,15 @@ export function parsePlan(raw: string): Plan {
     if (d.opening !== undefined && !n(d.opening, 0, 100)) fail()
     if (d.panelThickness !== undefined && !n(d.panelThickness, 1, 20)) fail()
   }
-  for (let a = 0; a < p.doors.length; a++) for (let b = a + 1; b < p.doors.length; b++) {
-    const x = p.doors[a], y = p.doors[b]
+  for (const window of p.windows ?? []) {
+    if (!window || typeof window !== 'object') return fail()
+    id(window.id)
+    const wall = p.walls.find((w: Wall) => w.id === window.wallId)
+    if (!wall || !n(window.width, 20, 1000) || !n(window.height, 20, 1000) || !n(window.sillHeight, 0, 1000) || !n(window.offset, window.width / 2, Math.hypot(wall.b.x - wall.a.x, wall.b.y - wall.a.y) - window.width / 2)) fail()
+  }
+  const openings = [...p.doors, ...(p.windows ?? [])]
+  for (let a = 0; a < openings.length; a++) for (let b = a + 1; b < openings.length; b++) {
+    const x = openings[a], y = openings[b]
     if (x.wallId === y.wallId && Math.abs(x.offset - y.offset) < (x.width + y.width) / 2) fail()
   }
   for (const i of p.items) {

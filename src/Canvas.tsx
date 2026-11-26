@@ -1,16 +1,17 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { Minus, Plus, Maximize, MousePointer2, Hand, Pentagon, DoorOpen, PanelsLeftBottom, Ruler, SquareDashed, RotateCcw, RotateCw } from 'lucide-react'
-import type { Plan, Point, Furniture, Wall, Room } from './model'
-import { distance, wallPoint, wallPieces, projectOnWall, corners, collision, overlaps, translateWall, translateItems, itemsInBox } from './geometry'
+import { Minus, Plus, Maximize, MousePointer2, Hand, Pentagon, DoorOpen, PanelsLeftBottom, Columns2, Ruler, SquareDashed, RotateCcw, RotateCw } from 'lucide-react'
+import type { Plan, Point, Furniture, Wall, Room, PlanWindow } from './model'
+import { distance, wallPoint, wallPieces, projectOnWall, corners, collision, overlaps, translateWall, translateItems, itemsInBox, slideWindow } from './geometry'
 import { itemIds, selectItems, toggleItem } from './selection'
 import type { Selection } from './selection'
 import { FurnitureShape } from './FurnitureShape'
 import DoorShape from './DoorShape'
+import WindowShape from './WindowShape'
 import CompassDial from './CompassDial'
 import OrientationToggle from './OrientationToggle'
 
-export type Tool = 'select' | 'room' | 'wall' | 'door' | 'sliding-door' | 'measure' | 'pan'
+export type Tool = 'select' | 'room' | 'wall' | 'door' | 'sliding-door' | 'window' | 'measure' | 'pan'
 export type { Selection } from './selection'
 export type RoutePoint = Point & { rotation: number }
 type Props = {
@@ -21,6 +22,7 @@ type Props = {
   onNorthAngle: (angle: number) => void; onOrientationLock: (locked: boolean) => void;
   onMove: (item: Furniture) => void; onItemsMove: (items: Furniture[]) => void; onRotate: (degrees: number) => void;
   onWallMove: (wall: Wall) => void;
+  onWindow: (wall: Wall, offset: number) => void; onWindowMove: (window: PlanWindow) => void;
   onDraw: (a: Point, b: Point, type: 'wall' | 'room') => void; onDoor: (wall: Wall, offset: number) => void;
 }
 const tools = [
@@ -30,6 +32,7 @@ const tools = [
   { id: 'wall', icon: Pentagon, name: '绘制墙体', key: 'W' },
   { id: 'door', icon: DoorOpen, name: '添加门洞', key: 'D' },
   { id: 'sliding-door', icon: PanelsLeftBottom, name: '添加推拉门', key: 'S' },
+  { id: 'window', icon: Columns2, name: '添加窗户', key: 'N' },
   { id: 'measure', icon: Ruler, name: '测量距离', key: 'M' },
 ] as const
 
@@ -40,6 +43,7 @@ export default function Canvas(p: Props) {
   const [draft, setDraft] = useState<{ a: Point; b: Point; type: 'wall' | 'room' | 'measure' } | null>(null)
   const [measurement, setMeasurement] = useState<{ a: Point; b: Point } | null>(null)
   const [wallPreview, setWallPreview] = useState<{ wall: Wall; base: Plan } | null>(null)
+  const [windowPreview, setWindowPreview] = useState<{ window: PlanWindow; base: Plan } | null>(null)
   const [itemsPreview, setItemsPreview] = useState<{ items: Furniture[]; base: Plan } | null>(null)
   const [marquee, setMarquee] = useState<{ a: Point; b: Point; ids: string[]; base: Plan } | null>(null)
   const designing = p.tool === 'select' && p.mode === 'design'
@@ -47,6 +51,7 @@ export default function Canvas(p: Props) {
   const selectedIds = new Set(visibleMarquee?.ids ?? itemIds(p.selection))
   let visiblePlan = p.plan
   if (designing && wallPreview?.base === p.plan) visiblePlan = { ...p.plan, walls: p.plan.walls.map(w => w.id === wallPreview.wall.id ? wallPreview.wall : w) }
+  if (designing && windowPreview?.base === p.plan) visiblePlan = { ...p.plan, windows: p.plan.windows?.map(window => window.id === windowPreview.window.id ? windowPreview.window : window) }
   if (designing && itemsPreview?.base === p.plan) {
     const updates = new Map(itemsPreview.items.map(item => [item.id, item]))
     visiblePlan = { ...p.plan, items: p.plan.items.map(item => updates.get(item.id) ?? item) }
@@ -56,6 +61,7 @@ export default function Canvas(p: Props) {
     | { type: 'pan'; start: Point; view: typeof view }
     | { type: 'draw'; a: Point; kind: 'wall' | 'room' | 'measure' }
     | (Gesture & { type: 'wall'; wall: Wall; next: Wall })
+    | (Gesture & { type: 'window'; window: PlanWindow; wall: Wall; next: PlanWindow; along: number })
     | (Gesture & { type: 'items'; items: Furniture[]; next: Furniture[] })
     | (Gesture & { type: 'marquee'; ids: string[]; next: string[]; click: Selection; additive: boolean }) | null>(null)
   const drawLatest = useRef(draft)
@@ -105,7 +111,7 @@ export default function Canvas(p: Props) {
   function cancelGesture() {
     const d = drag.current
     if (!d || !('pointerId' in d)) return
-    drag.current = null; setWallPreview(null); setItemsPreview(null); setMarquee(null)
+    drag.current = null; setWallPreview(null); setWindowPreview(null); setItemsPreview(null); setMarquee(null)
     if (svgRef.current?.hasPointerCapture(d.pointerId)) svgRef.current.releasePointerCapture(d.pointerId)
   }
   const validateGesture = useEffectEvent(() => {
@@ -117,7 +123,7 @@ export default function Canvas(p: Props) {
     function keyboard(e: KeyboardEvent) {
       if (!drag.current || !('base' in drag.current)) return
       if (e.key === 'Escape') { cancelGesture(); e.preventDefault(); e.stopPropagation() }
-      else if (e.ctrlKey || e.metaKey || ['v', 'h', 'b', 'w', 'd', 's', 'm', 'q', 'e', 'delete', 'backspace', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(e.key.toLowerCase())) cancelGesture()
+      else if (e.ctrlKey || e.metaKey || ['v', 'h', 'b', 'w', 'd', 's', 'n', 'm', 'q', 'e', 'delete', 'backspace', 'arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(e.key.toLowerCase())) cancelGesture()
     }
     window.addEventListener('keydown', keyboard, true)
     window.addEventListener('blur', cancelGesture)
@@ -140,10 +146,10 @@ export default function Canvas(p: Props) {
     if (p.tool === 'wall' || p.tool === 'room' || p.tool === 'measure') {
       drag.current = { type: 'draw', a: point, kind: p.tool }; const d = { a: point, b: point, type: p.tool }; setDraft(d); drawLatest.current = d
       e.currentTarget.setPointerCapture(e.pointerId)
-    } else if (p.tool === 'door' || p.tool === 'sliding-door') {
+    } else if (p.tool === 'door' || p.tool === 'sliding-door' || p.tool === 'window') {
       let best: Wall | undefined, offset = 0, nearest = 25 / view.scale
       for (const w of p.plan.walls) { const o = projectOnWall(point, w), d = distance(point, wallPoint(w, o)); if (d < nearest) { nearest = d; best = w; offset = o } }
-      if (best) p.onDoor(best, offset)
+      if (best) { if (p.tool === 'window') p.onWindow(best, offset); else p.onDoor(best, offset) }
     } else if (e.target === e.currentTarget || (e.target as Element).getAttribute('data-background')) startMarquee(e)
   }
   function startItem(e: ReactPointerEvent<SVGGElement>, item: Furniture) {
@@ -163,10 +169,18 @@ export default function Canvas(p: Props) {
   }
   function startWall(e: ReactPointerEvent<SVGGElement>, wall: Wall) {
     if (drag.current || !e.isPrimary || e.altKey || e.button !== 0 || p.mode !== 'design') return
+    if (p.tool === 'window') { e.stopPropagation(); p.onWindow(wall, projectOnWall(world(e), wall)); return }
     if (p.tool === 'door' || p.tool === 'sliding-door') { e.stopPropagation(); p.onDoor(wall, projectOnWall(world(e), wall)); return }
     if (p.tool !== 'select') return
     e.stopPropagation(); p.onSelect({ type: 'wall', id: wall.id })
     drag.current = { type: 'wall', wall, next: wall, base: p.plan, start: world(e), screen: { x: e.clientX, y: e.clientY }, pointerId: e.pointerId, moved: false }
+    svgRef.current?.setPointerCapture(e.pointerId)
+  }
+  function startWindow(e: ReactPointerEvent<SVGGElement>, window: PlanWindow, wall: Wall) {
+    if (drag.current || !e.isPrimary || !designing || e.button !== 0 || e.altKey) return
+    e.stopPropagation(); p.onSelect({ type: 'window', id: window.id })
+    const point = world(e)
+    drag.current = { type: 'window', window, wall, next: window, base: p.plan, start: point, screen: { x: e.clientX, y: e.clientY }, pointerId: e.pointerId, moved: false, along: projectOnWall(point, wall) }
     svgRef.current?.setPointerCapture(e.pointerId)
   }
   function move(e: ReactPointerEvent<SVGSVGElement>) {
@@ -186,6 +200,10 @@ export default function Canvas(p: Props) {
       const point = world(e)
       d.next = translateItems(d.items, { x: point.x - d.start.x, y: point.y - d.start.y }, p.snap)
       setItemsPreview({ items: d.next, base: d.base }); return
+    }
+    if (d.type === 'window') {
+      d.next = slideWindow(d.window, d.wall, d.base, projectOnWall(world(e), d.wall) - d.along, p.snap)
+      setWindowPreview({ window: d.next, base: d.base }); return
     }
     if (d.type === 'wall') {
       const point = world(e)
@@ -212,7 +230,8 @@ export default function Canvas(p: Props) {
         else if (!d.additive) p.onSelect(d.click)
       }
       if (d.type === 'items' && d.moved && d.next !== d.items) p.onItemsMove(d.next)
-      setItemsPreview(null); setMarquee(null)
+      if (d.type === 'window' && d.moved && d.next !== d.window) p.onWindowMove(d.next)
+      setItemsPreview(null); setWindowPreview(null); setMarquee(null)
     }
     if (d?.type === 'wall') {
       if (e.pointerId !== d.pointerId) return
@@ -228,7 +247,7 @@ export default function Canvas(p: Props) {
   }
   function cancel(e: ReactPointerEvent<SVGSVGElement>) {
     if (drag.current && 'pointerId' in drag.current && e.pointerId !== drag.current.pointerId) return
-    drag.current = null; drawLatest.current = null; setDraft(null); setWallPreview(null); setItemsPreview(null); setMarquee(null)
+    drag.current = null; drawLatest.current = null; setDraft(null); setWallPreview(null); setWindowPreview(null); setItemsPreview(null); setMarquee(null)
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
   function dimension(a: Point, b: Point, label: string, key?: string) {
@@ -272,7 +291,7 @@ export default function Canvas(p: Props) {
       {p.showDims && p.plan.rooms[0] && dimension({ x: p.plan.rooms[0].x - 37, y: p.plan.rooms[0].y }, { x: p.plan.rooms[0].x - 37, y: p.plan.rooms[0].y + p.plan.rooms[0].depth }, `${p.plan.rooms[0].depth}`)}
       {visiblePlan.walls.map(w => <g key={w.id} data-testid={`wall-${w.id}`} className="wall-shape" onPointerDown={e => startWall(e, w)}>
         <line x1={w.a.x} y1={w.a.y} x2={w.b.x} y2={w.b.y} stroke="transparent" strokeWidth={Math.max(14 / view.scale, w.thickness)} />
-        {wallPieces(w, visiblePlan).map((seg, n) => { const a = wallPoint(w, seg.from), b = wallPoint(w, seg.to); return <line key={n} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={p.selection?.id === w.id ? '#879765' : '#60695f'} strokeWidth={w.thickness} strokeLinecap="butt" /> })}
+        {wallPieces(w, visiblePlan, true).map((seg, n) => { const a = wallPoint(w, seg.from), b = wallPoint(w, seg.to); return <line key={n} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={p.selection?.id === w.id ? '#879765' : '#60695f'} strokeWidth={w.thickness} strokeLinecap="butt" /> })}
       </g>)}
       {p.plan.doors.map(d => {
         const w = visiblePlan.walls.find(v => v.id === d.wallId); if (!w) return null
@@ -282,6 +301,13 @@ export default function Canvas(p: Props) {
         </g>
       })}
       {p.route.length > 1 && <g pointerEvents="none"><polyline points={p.route.map(v => `${v.x},${v.y}`).join(' ')} fill="none" stroke="#779850" strokeWidth={3} strokeDasharray="7 5" /><circle cx={p.route[0].x} cy={p.route[0].y} r={7} fill="#fff" stroke="#779850" strokeWidth={3} /></g>}
+      {(visiblePlan.windows ?? []).map(window => {
+        const wall = visiblePlan.walls.find(w => w.id === window.wallId); if (!wall) return null
+        const a = wallPoint(wall, window.offset - window.width / 2), angle = Math.atan2(wall.b.y - wall.a.y, wall.b.x - wall.a.x) * 180 / Math.PI
+        return <g key={window.id} data-testid={`window-${window.id}`} data-window-id={window.id} className="window-shape" transform={`translate(${a.x},${a.y}) rotate(${angle})`} onPointerDown={e => startWindow(e, window, wall)}>
+          <WindowShape window={window} wall={wall} selected={p.selection?.type === 'window' && p.selection.id === window.id} showDims={p.showDims} scale={view.scale} />
+        </g>
+      })}
       {visiblePlan.items.map(item => {
         const selected = selectedIds.has(item.id)
         const hit = collision(item, visiblePlan)

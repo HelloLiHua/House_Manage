@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry, translateWall, translateItems, itemsInBox } from '../src/geometry.ts'
+import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry, translateWall, translateItems, itemsInBox, wallPieces, openingFits, slideWindow } from '../src/geometry.ts'
 import { initialPlan, emptyPlan, parsePlan, type Furniture, type Plan, type Door } from '../src/model.ts'
 
 const box = (patch: Partial<Furniture> = {}): Furniture => ({ id: 'box', name: '箱子', kind: 'custom', x: 0, y: 0, width: 40, depth: 40, height: 80, rotation: 0, color: '#aabbcc', ...patch })
@@ -231,4 +231,69 @@ test('group translations preserve spacing, rotations and fractional coordinates 
   assert.equal(bounded[1].y - bounded[0].y, items[1].y - items[0].y)
   assert.equal(translateItems(items, { x: 1, y: 2 }, true), items)
   assert.equal(translateItems(items, { x: NaN, y: 0 }, true), items)
+})
+
+const windowPlan = (): Plan => ({ ...emptyPlan(), walls: [{ id: 'wall', a: { x: 0, y: 0 }, b: { x: 600, y: 0 }, thickness: 14 }],
+  windows: [{ id: 'window', wallId: 'wall', offset: 200, width: 120, height: 150, sillHeight: 90 }],
+  doors: [{ id: 'door', wallId: 'wall', offset: 450, width: 90, height: 210, flip: false }] })
+
+test('window plans round-trip while legacy version-1 files remain unchanged', () => {
+  assert.deepEqual(parsePlan(JSON.stringify(emptyPlan())), emptyPlan())
+  for (const sillHeight of [0, 90, 125.5, 1000]) {
+    const p = windowPlan(); p.windows![0].sillHeight = sillHeight
+    assert.deepEqual(parsePlan(JSON.stringify(p)), p)
+  }
+})
+
+test('window imports reject invalid arrays, dimensions, references, duplicate ids and overlapping openings', () => {
+  const plan = windowPlan(), window = plan.windows![0]
+  for (const windows of [null, {}, 'windows', [null], Array(501).fill(window)]) assert.throws(() => parsePlan(JSON.stringify({ ...plan, windows })))
+  for (const patch of [{ id: 'wall' }, { id: 'door' }, { wallId: 'missing' }, { width: 0 }, { width: 1001 }, { height: 19 }, { height: null }, { sillHeight: -1 }, { sillHeight: '90' }, { sillHeight: 1001 }, { sillHeight: null }, { offset: 10 }, { offset: 590 }, { offset: 450 }]) {
+    assert.throws(() => parsePlan(JSON.stringify({ ...plan, windows: [{ ...window, ...patch }] })))
+  }
+  assert.throws(() => parsePlan(JSON.stringify({ ...plan, windows: [window, { ...window, id: 'second', offset: 250 }] })))
+  assert.equal(openingFits(plan, plan.walls[0], { ...plan.doors[0], offset: 230 }), false)
+})
+
+test('windows cut the plan drawing but never open a ground-level moving passage', () => {
+  const plan = windowPlan(), wall = plan.walls[0]
+  assert.deepEqual(wallPieces(wall, plan, true), [{ from: 0, to: 140 }, { from: 260, to: 405 }, { from: 495, to: 600 }])
+  assert.deepEqual(wallPieces(wall, plan), [{ from: 0, to: 405 }, { from: 495, to: 600 }])
+  for (const sillHeight of [0, 90]) {
+    plan.windows![0].sillHeight = sillHeight
+    assert.equal(sweep(box({ x: 200, y: -100, height: 40 }), box({ x: 200, y: 100, height: 40 }), plan).blocked?.kind, 'wall')
+  }
+  assert.equal(sweep(box({ x: 450, y: -100 }), box({ x: 450, y: 100 }), plan).blocked, null)
+})
+
+test('window dragging snaps along the wall, preserves size and clamps at wall edges and neighbours', () => {
+  const plan = windowPlan(), wall = plan.walls[0], window = plan.windows![0]
+  assert.equal(slideWindow(window, wall, plan, 27, true).offset, 230)
+  assert.equal(slideWindow(window, wall, plan, 27, false).offset, 227)
+  assert.equal(slideWindow(window, wall, plan, -1000, false).offset, 60)
+  const limited = slideWindow(window, wall, plan, 1000, true)
+  assert.equal(limited.offset, 345); assert.equal(openingFits(plan, wall, limited), true)
+  assert.deepEqual(limited, { ...window, offset: 345 })
+  assert.equal(slideWindow(window, wall, plan, NaN, true), window)
+  plan.windows!.push({ ...window, id: 'left', offset: 70, width: 40 })
+  assert.equal(slideWindow(window, wall, plan, -1000, false).offset, 150)
+})
+
+test('merging reversed walls preserves window position and dimensions in either axis', () => {
+  for (const vertical of [false, true]) {
+    const point = (v: number) => vertical ? { x: 0, y: v } : { x: v, y: 0 }
+    const plan: Plan = { ...emptyPlan(), walls: [{ id: 'wall', a: point(600), b: point(100), thickness: 14 }], windows: [{ id: 'window', wallId: 'wall', offset: 200, width: 120, height: 150, sillHeight: 90 }] }
+    const next = integrateWall(plan, { id: 'extra', a: point(-100), b: point(100), thickness: 14 })
+    assert.deepEqual(wallPoint(next.walls[0], next.windows![0].offset), point(400))
+    assert.deepEqual(next.windows![0], { ...plan.windows![0], offset: 500 })
+    assert.deepEqual(parsePlan(JSON.stringify(next)), next)
+  }
+})
+
+test('wall merges reject door-window conflicts without mutating the original plan', () => {
+  const plan = windowPlan(); plan.walls.push({ id: 'other', a: { x: 100, y: 0 }, b: { x: 400, y: 0 }, thickness: 14 })
+  plan.windows!.push({ ...plan.windows![0], id: 'second', wallId: 'other', offset: 100 })
+  const before = JSON.stringify(plan)
+  assert.throws(() => integrateWall(plan, { id: 'extra', a: { x: 0, y: 0 }, b: { x: 600, y: 0 }, thickness: 14 }), /门窗重叠/)
+  assert.equal(JSON.stringify(plan), before)
 })
