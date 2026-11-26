@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry, translateWall } from '../src/geometry.ts'
+import { collision, sweep, corners, overlaps, integrateWall, wallPoint, doorPassage, slidingPanels, slidingPanelPolygons, swingDoorGeometry, translateWall, translateItems, itemsInBox } from '../src/geometry.ts'
 import { initialPlan, emptyPlan, parsePlan, type Furniture, type Plan, type Door } from '../src/model.ts'
 
 const box = (patch: Partial<Furniture> = {}): Furniture => ({ id: 'box', name: '箱子', kind: 'custom', x: 0, y: 0, width: 40, depth: 40, height: 80, rotation: 0, color: '#aabbcc', ...patch })
@@ -210,4 +210,25 @@ test('sliding parameters round-trip and malformed options are rejected', () => {
     const raw = { ...p, doors: [{ ...p.doors[0], ...invalid }] }
     assert.throws(() => parsePlan(JSON.stringify(raw)))
   }
+})
+
+test('marquee selection intersects rotated footprints in either direction and excludes empty corners', () => {
+  const rotated = box({ x: 100, y: 100, width: 100, depth: 20, rotation: 45 })
+  assert.deepEqual(itemsInBox([rotated], { x: 125, y: 125 }, { x: 140, y: 140 }), ['box'])
+  assert.deepEqual(itemsInBox([rotated], { x: 140, y: 140 }, { x: 125, y: 125 }), ['box'])
+  assert.deepEqual(itemsInBox([rotated], { x: 60, y: 125 }, { x: 75, y: 140 }), [])
+  assert.deepEqual(itemsInBox([rotated], { x: 100, y: 50 }, { x: 100, y: 150 }), [])
+})
+
+test('group translations preserve spacing, rotations and fractional coordinates and clamp as a whole', () => {
+  const items = [box({ x: 100.25, y: 200.5 }), box({ id: 'second', x: 275.75, y: 330.25, rotation: 38 })]
+  const moved = translateItems(items, { x: 73, y: -44 }, true)
+  assert.deepEqual(moved, items.map(item => ({ ...item, x: item.x + 70, y: item.y - 40 })))
+  assert.deepEqual(translateItems(items, { x: 23, y: 17 }, false), items.map(item => ({ ...item, x: item.x + 23, y: item.y + 17 })))
+  const bounded = translateItems(items, { x: 20000, y: -20000 }, true)
+  assert.equal(bounded[1].x, 10000); assert.equal(bounded[0].y, -10000)
+  assert.equal(bounded[1].x - bounded[0].x, items[1].x - items[0].x)
+  assert.equal(bounded[1].y - bounded[0].y, items[1].y - items[0].y)
+  assert.equal(translateItems(items, { x: 1, y: 2 }, true), items)
+  assert.equal(translateItems(items, { x: NaN, y: 0 }, true), items)
 })

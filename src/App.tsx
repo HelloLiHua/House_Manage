@@ -5,7 +5,8 @@ import OrientationSettings from './OrientationSettings'
 import SwingDoorSettings from './SwingDoorSettings'
 import type { Selection, Tool, RoutePoint } from './Canvas'
 import { FurnitureThumbnail } from './FurnitureShape'
-import { collision, distance, doorPassage, integrateWall, sweep } from './geometry'
+import { collision, distance, doorPassage, integrateWall, sweep, translateItems } from './geometry'
+import { itemIds, selectItems, toggleItem, validSelection } from './selection'
 import { emptyPlan, initialPlan, parsePlan, templates, uid } from './model'
 import type { Plan, Furniture, Point, Template, Wall, Door } from './model'
 import { STORAGE_KEY, usePlan } from './usePlan'
@@ -39,7 +40,11 @@ function download(content: string, name: string, type: string) {
 
 function App() {
   const { plan, current, setPlan, checkpoint, undo, redo, canUndo, canRedo, revision, initialError } = usePlan()
-  const [selection, setSelection] = useState<Selection>(plan.items[0] ? { type: 'item', id: plan.items[0].id } : null)
+  const [selectionState, setSelection] = useState<Selection>(plan.items[0] ? { type: 'item', id: plan.items[0].id } : null)
+  const selection = validSelection(selectionState, plan)
+  if (selection !== selectionState) setSelection(selection)
+  const selectedIds = new Set(itemIds(selection))
+  const selectedItems = plan.items.filter(item => selectedIds.has(item.id))
   const [tool, setTool] = useState<Tool>('select'), [mode, setMode] = useState<'design' | 'move'>('design')
   const [snap, setSnap] = useState(true), [showDims, setShowDims] = useState(true), [fitKey, setFitKey] = useState(0)
   const [search, setSearch] = useState(''), [category, setCategory] = useState('全部')
@@ -98,7 +103,7 @@ function App() {
   }, [modal])
 
   function select(s: Selection) {
-    if (locked && s?.id !== selected?.id) return
+    if (locked && (s?.type !== 'item' || s.id !== selected?.id)) return
     setSelection(s); setBlocked('')
   }
   function changeNorthAngle(northAngle: number) {
@@ -134,6 +139,13 @@ function App() {
     if (locked) onMove({ ...selected, rotation: selected.rotation + degrees })
     else updateItem({ rotation: (selected.rotation + degrees + 360) % 360 })
   }
+  function moveItems(items: Furniture[]) {
+    if (locked || items.some(item => ![item.x, item.y].every(v => Number.isFinite(v) && Math.abs(v) <= 10000))) return
+    const updates = new Map(items.map(item => [item.id, item]))
+    const p = current.current
+    if (!p.items.some(item => { const next = updates.get(item.id); return next && (next.x !== item.x || next.y !== item.y) })) return
+    setPlan({ ...p, items: p.items.map(item => updates.get(item.id) ?? item) })
+  }
   function findPlacement(template: Template, id: string, preferred?: Point): Furniture {
     const item: Furniture = { ...template, id, x: preferred?.x ?? 350, y: preferred?.y ?? 330, rotation: 0 }
     if (preferred && !collision(item, current.current, 3)) return item
@@ -153,11 +165,17 @@ function App() {
     setPlan(p => ({ ...p, items: [...p.items, item] })); setSelection({ type: 'item', id: item.id }); setTool('select'); setFitKey(v => v + 1)
     setToast(`已添加${template.name}，可拖动摆放或修改尺寸`)
   }
-  function duplicate() { if (selected && !locked) { const item = findPlacement({ ...selected, name: `${selected.name} 副本`.slice(0, 100) }, uid(), { x: selected.x + 40, y: selected.y + 40 }); setPlan(p => ({ ...p, items: [...p.items, item] })); setSelection({ type: 'item', id: item.id }); setFitKey(v => v + 1) } }
+  function duplicate() {
+    if (locked || !selectedItems.length) return
+    if (plan.items.length + selectedItems.length > 500) { setToast('每个方案最多放置 500 件物品'); return }
+    const copies = selected ? [findPlacement({ ...selected, name: `${selected.name} 副本`.slice(0, 100) }, uid(), { x: selected.x + 40, y: selected.y + 40 })]
+      : translateItems(selectedItems, { x: 40, y: 40 }, false).map(item => ({ ...item, id: uid(), name: `${item.name} 副本`.slice(0, 100) }))
+    setPlan(p => ({ ...p, items: [...p.items, ...copies] })); setSelection(selectItems(copies.map(item => item.id))); setFitKey(v => v + 1)
+  }
   function remove() {
     if (!selection || locked) return
     const { type, id } = selection
-    setPlan(p => ({ ...p, items: type === 'item' ? p.items.filter(i => i.id !== id) : p.items, rooms: type === 'room' ? p.rooms.filter(r => r.id !== id) : p.rooms, walls: type === 'wall' ? p.walls.filter(w => w.id !== id) : p.walls, doors: p.doors.filter(d => !(type === 'door' && d.id === id) && !(type === 'wall' && d.wallId === id)) }))
+    setPlan(p => ({ ...p, items: selectedIds.size ? p.items.filter(i => !selectedIds.has(i.id)) : p.items, rooms: type === 'room' ? p.rooms.filter(r => r.id !== id) : p.rooms, walls: type === 'wall' ? p.walls.filter(w => w.id !== id) : p.walls, doors: p.doors.filter(d => !(type === 'door' && d.id === id) && !(type === 'wall' && d.wallId === id)) }))
     setSelection(null); if (type === 'room') setToast('已移除房间标注。墙体可单独选中删除。')
   }
   function draw(a: Point, b: Point, type: 'wall' | 'room') {
@@ -240,6 +258,7 @@ function App() {
       header.append(label, compass); copy.append(header)
     }
     copy.querySelector('[data-background]')?.remove()
+    copy.querySelectorAll('[data-selection-overlay]').forEach(element => element.remove())
     const style = document.createElementNS('http://www.w3.org/2000/svg', 'style'); style.textContent = 'text{font-family:Arial,"Microsoft YaHei",sans-serif}.room-name{font-size:21px;fill:#8a8d7d;text-anchor:middle}.room-area{font-size:13px;fill:#aaa99d;text-anchor:middle}.dimension path{fill:none;stroke:#abb09e;stroke-width:1}.dimension text{font-size:13px;fill:#7f8772;text-anchor:middle}'
     copy.prepend(style); download(new XMLSerializer().serializeToString(copy), `${plan.name || '房屋方案'}.svg`, 'image/svg+xml'); setExportMenu(false)
   }
@@ -270,17 +289,19 @@ function App() {
       if (key === '/') { e.preventDefault(); document.querySelector<HTMLInputElement>('[aria-label="搜索家具"]')?.focus() }
       const shortcuts: Record<string, Tool> = { v: 'select', h: 'pan', b: 'room', w: 'wall', d: 'door', s: 'sliding-door', m: 'measure' }
       if (shortcuts[key] && (!locked || ['v', 'h', 'm'].includes(key))) setTool(shortcuts[key])
-      if (selected && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key)) {
-        e.preventDefault(); if (!locked) checkpoint()
+      if (selectedItems.length && ['arrowleft', 'arrowright', 'arrowup', 'arrowdown'].includes(key)) {
+        e.preventDefault()
         const step = e.shiftKey ? 10 : 1
-        onMove({ ...selected, x: selected.x + (key === 'arrowleft' ? -step : key === 'arrowright' ? step : 0), y: selected.y + (key === 'arrowup' ? -step : key === 'arrowdown' ? step : 0) })
+        const delta = { x: key === 'arrowleft' ? -step : key === 'arrowright' ? step : 0, y: key === 'arrowup' ? -step : key === 'arrowdown' ? step : 0 }
+        if (locked && selected) onMove({ ...selected, x: selected.x + delta.x, y: selected.y + delta.y })
+        else moveItems(translateItems(selectedItems, delta, false))
       }
     }
     window.addEventListener('keydown', keyboard); return () => window.removeEventListener('keydown', keyboard)
   })
 
   const filtered = templates.filter(t => t.name.includes(search) && (category === '全部' || (category === '客厅' && ['sofa', 'table', 'plant'].includes(t.kind)) || (category === '卧室' && ['bed', 'cabinet'].includes(t.kind)) || (category === '书房' && ['table', 'chair', 'cabinet'].includes(t.kind))))
-  const hint = { select: selection?.type === 'wall' ? '拖动墙体整体移动 · 门随墙移动 · Esc 取消拖动' : '拖动物件或墙体调整位置 · Q / E 旋转物件', room: '拖动绘制矩形房间 · 相邻墙体自动合并', wall: '拖动绘制墙体 · 按住 Shift 绘制斜墙', door: '点击墙体添加门洞 · 默认净宽 90 cm', 'sliding-door': '点击墙体添加推拉门 · 可设置双扇或单扇、开合程度', pan: '拖动画布平移 · 滚轮缩放', measure: '拖动两点测量距离 · 按 V 返回选择' }[tool]
+  const hint = { select: selection?.type === 'wall' ? '拖动墙体整体移动 · 门随墙移动 · Esc 取消拖动' : selectedItems.length > 1 ? `已选 ${selectedItems.length} 件 · 拖动一起移动 · Shift 点击增减` : '空白处拖动框选 · Shift 点击多选 · 拖动物件或墙体移动', room: '拖动绘制矩形房间 · 相邻墙体自动合并', wall: '拖动绘制墙体 · 按住 Shift 绘制斜墙', door: '点击墙体添加门洞 · 默认净宽 90 cm', 'sliding-door': '点击墙体添加推拉门 · 可设置双扇或单扇、开合程度', pan: '拖动画布平移 · 滚轮缩放', measure: '拖动两点测量距离 · 按 V 返回选择' }[tool]
 
   return <div className="app">
     <header className="app-header">
@@ -298,19 +319,25 @@ function App() {
           {!filtered.length && <div className="empty-search"><Search size={23} /><p>没有找到对应家具</p><button onClick={() => { setSearch(''); setCategory('全部') }}>查看全部</button></div>}
 
           <div className="library-note"><Sparkles size={15} /><p>家具尺寸只是起点。选中后，随时修改为你的实际尺寸。</p></div>
-        </div> : <div className="objects-list"><div className="panel-intro"><h2>空间里的物件</h2><p>选择物件，查看参数或开始搬运试验。</p></div>{plan.items.map(i => <button key={i.id} className={selected?.id === i.id ? 'active' : ''} disabled={locked && selected?.id !== i.id} onClick={() => { select({ type: 'item', id: i.id }); setTool('select') }}><FurnitureThumbnail item={i} /><span><strong>{i.name}</strong><small>{i.width} × {i.depth} × {i.height} cm</small></span>{collision(i, plan) ? <TriangleAlert size={15} className="warning-color" /> : <ChevronRight size={14} />}</button>)}{!plan.items.length && <p className="muted">还没有物件，从家具库添加一件吧。</p>}</div>}
+        </div> : <div className="objects-list"><div className="panel-intro"><h2>空间里的物件</h2><p>Shift 点击可追加或取消选择。</p></div>{plan.items.map(i => <button key={i.id} className={selectedIds.has(i.id) ? 'active' : ''} aria-pressed={selectedIds.has(i.id)} disabled={locked && selected?.id !== i.id} onClick={e => { select(e.shiftKey && !locked ? toggleItem(selection, i.id) : { type: 'item', id: i.id }); setTool('select') }}><FurnitureThumbnail item={i} /><span><strong>{i.name}</strong><small>{i.width} × {i.depth} × {i.height} cm</small></span>{collision(i, plan) ? <TriangleAlert size={15} className="warning-color" /> : <ChevronRight size={14} />}</button>)}{!plan.items.length && <p className="muted">还没有物件，从家具库添加一件吧。</p>}</div>}
         <div className="library-footer"><button className="custom-button" disabled={locked} onClick={() => { setCustomError(''); setModal('custom') }}><span><Plus size={18} /></span><div><strong>创建自定义物件</strong><small>输入尺寸，什么都能放进来</small></div><ChevronRight size={16} /></button><button disabled={locked} onClick={() => fileRef.current?.click()}><ArrowUpFromLine size={15} />导入已有方案<ChevronRight size={14} /></button></div>
       </aside>}
       <input ref={fileRef} type="file" accept=".json,application/json" aria-label="导入方案文件" hidden onChange={e => { void importFile(e.target.files?.[0]); e.currentTarget.value = '' }} />
       <section className="editor-panel">
         <div className="editor-topline"><div><span className="plan-dot" />{locked ? `正在试搬 · ${selected?.name}` : '户型平面图'}<span className="view-tag">俯视图</span></div><div className="canvas-toggles"><button role="switch" aria-checked={snap} className={snap ? 'on' : ''} onClick={() => setSnap(v => !v)}><span className="mini-check">{snap && <Check size={10} />}</span>网格吸附</button><button role="switch" aria-checked={showDims} className={showDims ? 'on' : ''} onClick={() => setShowDims(v => !v)}><span className="mini-check">{showDims && <Check size={10} />}</span>尺寸标注</button></div></div>
-        <Canvas plan={plan} selection={selection} tool={tool} mode={mode} snap={snap} showDims={showDims} fitKey={fitKey} route={route} blocked={!!blocked} clearance={clearance} onOrientation={() => { if (!locked) setModal('orientation') }} onNorthAngle={changeNorthAngle} onOrientationLock={changeOrientationLock} onSelect={select} onTool={setTool} onDragStart={() => { if (!locked) checkpoint() }} onMove={onMove} onWallMove={moveWall} onRotate={rotate} onDraw={draw} onDoor={addDoor} />
+        <Canvas plan={plan} selection={selection} tool={tool} mode={mode} snap={snap} showDims={showDims} fitKey={fitKey} route={route} blocked={!!blocked} clearance={clearance} onOrientation={() => { if (!locked) setModal('orientation') }} onNorthAngle={changeNorthAngle} onOrientationLock={changeOrientationLock} onSelect={select} onTool={setTool} onMove={onMove} onItemsMove={moveItems} onWallMove={moveWall} onRotate={rotate} onDraw={draw} onDoor={addDoor} />
         <div className="canvas-hint"><MousePointer2 size={13} /><span>{locked ? '拖动已选物件试搬 · Q / E 旋转 · 碰撞时自动停下' : hint}</span><span className="hint-right">滚轮缩放 <span>·</span> Alt + 拖动平移</span></div>
       </section>
       <aside className="properties-panel">
         <div className="properties-title"><Settings2 size={16} /><h2>{locked ? '搬运试验' : '物件与空间'}</h2><span className="tiny-tag">{locked ? '实时检测' : '属性'}</span></div>
         <div className="properties-scroll">
-          {selected ? <>
+          {selectedItems.length > 1 ? <div className="multi-selection" data-testid="multi-selection">
+            <div className="multi-selection-heading"><span className="multi-selection-icon"><Layers size={24} /></span><div><span className="eyebrow">MULTIPLE OBJECTS</span><h3>已选中 {selectedItems.length} 件物品</h3></div><button className="icon-button" aria-label="取消多选" onClick={() => setSelection(null)}><X size={15} /></button></div>
+            <p className="multi-selection-note">拖动其中任意一件，一起调整位置。物品之间的距离保持不变。</p>
+            <div className="multi-selection-list">{selectedItems.map(item => <div key={item.id}><FurnitureThumbnail item={item} /><span><strong>{item.name}</strong><small>{item.width} × {item.depth} × {item.height} cm</small></span><button className="icon-button" aria-label={`取消选择${item.name}`} onClick={() => select(toggleItem(selection, item.id))}><X size={13} /></button></div>)}</div>
+            <div className="object-actions"><button onClick={duplicate}><Copy size={14} />复制所选</button><button className="danger" onClick={remove}><Trash2 size={14} />删除所选</button></div>
+            <div className="info-box"><Info size={16} /><p>Shift 点击可增减物件；方向键可一起微调。要修改尺寸或试搬，请单独选中一件。</p></div>
+          </div> : selected ? <>
             <div className="selected-object"><div className="selected-preview"><FurnitureThumbnail item={selected} /></div><div><span className="eyebrow">{selected.kind === 'custom' ? 'CUSTOM OBJECT' : 'FURNITURE'}</span><h3>{selected.name}</h3><span className="muted">{locked ? '保持直立 · 地面搬运' : '已选中 · 可编辑'}</span></div><button className="icon-button" aria-label="取消选择" disabled={locked} onClick={() => setSelection(null)}><X size={15} /></button></div>
             <div className="property-section"><h4>基本信息</h4><label className="text-field"><span>物件名称</span><input aria-label="物件名称" disabled={locked} value={selected.name} maxLength={100} onChange={e => updateItem({ name: e.target.value })} /></label><div className="section-heading"><h4>实际尺寸</h4><span>厘米 cm</span></div><div className="dimensions-grid"><Numeric label="长度" value={selected.width} max={2000} min={5} onChange={v => updateItem({ width: v })} disabled={locked} /><Numeric label="宽度" value={selected.depth} max={2000} min={5} onChange={v => updateItem({ depth: v })} disabled={locked} /><Numeric label="高度" value={selected.height} max={1000} onChange={v => updateItem({ height: v })} disabled={locked} /></div><p className="field-note"><Info size={12} />高度用于门洞净高检查</p></div>
             <div className="property-section"><div className="section-heading"><h4>位置与角度</h4><span>以物件中心为准</span></div><div className="two-fields"><Numeric label="X 坐标" value={selected.x} min={-10000} max={10000} disabled={locked} onChange={v => updateItem({ x: v })} /><Numeric label="Y 坐标" value={selected.y} min={-10000} max={10000} disabled={locked} onChange={v => updateItem({ y: v })} /></div><div className="rotation-row"><Numeric label="旋转角度" value={(selected.rotation % 360 + 360) % 360} min={0} max={360} suffix="°" disabled={locked} onChange={v => updateItem({ rotation: v })} /><button className="icon-button" aria-label="逆时针旋转90度" title="逆时针 90°" onClick={() => rotate(-90)}><RotateCcw size={17} /></button><button className="icon-button" aria-label="顺时针旋转90度" title="顺时针 90°" onClick={() => rotate(90)}><RotateCw size={17} /></button></div>{!locked && <div className="color-row"><span>物件颜色</span><div>{['#bbc8b3', '#c7bfb3', '#d5bc98', '#a7bbbe', '#c5a7a0'].map(c => <button key={c} aria-label={`颜色 ${c}`} style={{ background: c }} className={selected.color === c ? 'selected' : ''} onClick={() => updateItem({ color: c })}>{selected.color === c && <Check size={12} />}</button>)}</div></div>}</div>
@@ -356,7 +383,7 @@ function App() {
     <footer className="status-bar"><span><span className="live-dot" />本地工作空间</span><i /><span>{plan.rooms.length} 个房间</span><span>{totalArea.toFixed(1)} m² <em>标注面积</em></span><i /><span><Box size={13} />{plan.items.length} 件物品</span><span className={`global-collision ${hits ? 'warning-color' : ''}`}>{hits ? <TriangleAlert size={13} /> : <ShieldCheck size={13} />}{hits ? `${hits} 件物品存在碰撞` : '布局无碰撞'}</span><span className="status-right">先想好，再安放。<span className="version">v0.1</span></span></footer>
     {toast && <div className="toast" role="status"><Info size={17} /><span>{toast}</span><button aria-label="关闭提示" onClick={() => setToast('')}><X size={15} /></button></div>}
     {modal && <div className="modal-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setModal(null) }}><div ref={modalRef} className={`modal ${modal === 'help' ? 'help-modal' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title"><button className="modal-close icon-button" aria-label="关闭对话框" onClick={() => setModal(null)}><X size={20} /></button>
-      {modal === 'orientation' ? <OrientationSettings angle={plan.northAngle ?? 0} locked={plan.orientationLocked ?? true} onCancel={() => setModal(null)} onApply={(northAngle, orientationLocked) => { if (!locked && (northAngle !== (plan.northAngle ?? 0) || orientationLocked !== (plan.orientationLocked ?? true))) setPlan(p => ({ ...p, northAngle, orientationLocked })); setModal(null) }} /> : modal === 'custom' ? <><div className="modal-symbol"><Package size={27} /></div><h2 id="modal-title">每件物品，都有自己的位置</h2><p className="modal-description">输入真实尺寸，在搬进家之前先试着摆一摆。</p><label className="text-field"><span>物件名称</span><input autoFocus aria-label="自定义物件名称" maxLength={100} value={custom.name} onChange={e => setCustom(v => ({ ...v, name: e.target.value }))} /></label><div className="custom-dimensions">{[{ key: 'width', label: '长度' }, { key: 'depth', label: '宽度' }, { key: 'height', label: '高度' }].map(f => <label className="number-field" key={f.key}><span>{f.label}</span><div><input aria-label={`自定义${f.label}`} type="number" min={f.key === 'height' ? 1 : 5} max={f.key === 'height' ? 1000 : 2000} value={custom[f.key as 'width' | 'depth' | 'height']} onChange={e => setCustom(v => ({ ...v, [f.key]: e.target.value }))} /><em>cm</em></div></label>)}</div><label className="room-color">物件颜色<input type="color" aria-label="自定义物件颜色" value={custom.color} onChange={e => setCustom(v => ({ ...v, color: e.target.value }))} /></label>{customError && <p role="alert" className="form-error">{customError}</p>}<div className="modal-note"><Info size={15} /><p>物件以矩形占地轮廓显示，高度用于检查门洞净高。</p></div><button className="primary-button full-width" onClick={createCustom}><Plus size={16} />添加到画布</button></> : modal === 'new' ? <><div className="modal-symbol"><House size={28} /></div><h2 id="modal-title">开始一个新的空间</h2><p className="modal-description">当前方案会被替换，可使用撤销恢复。需要长期保留时，请先导出。</p><button className="new-plan-option" onClick={() => { setPlan(emptyPlan()); setSelection(null); setModal(null); setTool('room'); setFitKey(v => v + 1) }}><FilePlus2 size={26} /><span><strong>从空白开始</strong><small>亲手绘制房间、墙体与门洞</small></span><ArrowRight size={18} /></button><button className="new-plan-option" onClick={() => { setPlan(initialPlan()); setSelection({ type: 'item', id: 'sofa' }); setModal(null); setTool('select'); setFitKey(v => v + 1) }}><LayoutTemplate size={26} /><span><strong>使用示例户型</strong><small>一间客厅、一间卧室、一间书房</small></span><ArrowRight size={18} /></button><button className="text-button" onClick={exportJson}><ArrowDownToLine size={14} />先导出当前方案</button></> : <><div className="modal-symbol"><Sparkles size={28} /></div><h2 id="modal-title">在屏幕里，先把家安顿好</h2><p className="modal-description">所有尺寸以厘米为单位，画布按比例显示。</p><div className="help-steps"><div><span>01</span><h3>画出你的空间</h3><p>绘制房间（B）会自动创建四面墙。绘制墙体（W）默认水平或垂直，按住 Shift 可画斜墙。选中墙体能输入精确长度。</p></div><div><span>02</span><h3>给每件家具真实的尺寸</h3><p>从家具库添加，或创建自定义物件。选中物件后修改长宽高，拖动摆放；方向键微调 1 cm，按 Shift 微调 10 cm。</p></div><div><span>03</span><h3>试一条真实的搬运路线</h3><p>用门洞（D）或推拉门（S）工具在墙体上开门，设置尺寸与开度。已有门洞也可切换为推拉门。选中家具开始搬运，Q / E 每次旋转 15°，碰到障碍会停下。</p></div></div><div className="modal-note"><Info size={17} /><p>试验采用直立矩形外轮廓与门洞净高，仅验证手动走过的路径。已检测推拉门当前门扇位置；未模拟倾斜、抬起、拆卸、平开门扇和搬运人员；实际搬运还应核实这些条件。</p></div><div className="shortcut-list"><span><kbd>Ctrl Z</kbd>撤销</span><span><kbd>Ctrl D</kbd>复制物件</span><span><kbd>Delete</kbd>删除</span><span><kbd>Ctrl S</kbd>导出方案</span></div><button className="primary-button full-width" onClick={() => setModal(null)}>开始规划<ArrowRight size={15} /></button></>}
+      {modal === 'orientation' ? <OrientationSettings angle={plan.northAngle ?? 0} locked={plan.orientationLocked ?? true} onCancel={() => setModal(null)} onApply={(northAngle, orientationLocked) => { if (!locked && (northAngle !== (plan.northAngle ?? 0) || orientationLocked !== (plan.orientationLocked ?? true))) setPlan(p => ({ ...p, northAngle, orientationLocked })); setModal(null) }} /> : modal === 'custom' ? <><div className="modal-symbol"><Package size={27} /></div><h2 id="modal-title">每件物品，都有自己的位置</h2><p className="modal-description">输入真实尺寸，在搬进家之前先试着摆一摆。</p><label className="text-field"><span>物件名称</span><input autoFocus aria-label="自定义物件名称" maxLength={100} value={custom.name} onChange={e => setCustom(v => ({ ...v, name: e.target.value }))} /></label><div className="custom-dimensions">{[{ key: 'width', label: '长度' }, { key: 'depth', label: '宽度' }, { key: 'height', label: '高度' }].map(f => <label className="number-field" key={f.key}><span>{f.label}</span><div><input aria-label={`自定义${f.label}`} type="number" min={f.key === 'height' ? 1 : 5} max={f.key === 'height' ? 1000 : 2000} value={custom[f.key as 'width' | 'depth' | 'height']} onChange={e => setCustom(v => ({ ...v, [f.key]: e.target.value }))} /><em>cm</em></div></label>)}</div><label className="room-color">物件颜色<input type="color" aria-label="自定义物件颜色" value={custom.color} onChange={e => setCustom(v => ({ ...v, color: e.target.value }))} /></label>{customError && <p role="alert" className="form-error">{customError}</p>}<div className="modal-note"><Info size={15} /><p>物件以矩形占地轮廓显示，高度用于检查门洞净高。</p></div><button className="primary-button full-width" onClick={createCustom}><Plus size={16} />添加到画布</button></> : modal === 'new' ? <><div className="modal-symbol"><House size={28} /></div><h2 id="modal-title">开始一个新的空间</h2><p className="modal-description">当前方案会被替换，可使用撤销恢复。需要长期保留时，请先导出。</p><button className="new-plan-option" onClick={() => { setPlan(emptyPlan()); setSelection(null); setModal(null); setTool('room'); setFitKey(v => v + 1) }}><FilePlus2 size={26} /><span><strong>从空白开始</strong><small>亲手绘制房间、墙体与门洞</small></span><ArrowRight size={18} /></button><button className="new-plan-option" onClick={() => { setPlan(initialPlan()); setSelection({ type: 'item', id: 'sofa' }); setModal(null); setTool('select'); setFitKey(v => v + 1) }}><LayoutTemplate size={26} /><span><strong>使用示例户型</strong><small>一间客厅、一间卧室、一间书房</small></span><ArrowRight size={18} /></button><button className="text-button" onClick={exportJson}><ArrowDownToLine size={14} />先导出当前方案</button></> : <><div className="modal-symbol"><Sparkles size={28} /></div><h2 id="modal-title">在屏幕里，先把家安顿好</h2><p className="modal-description">所有尺寸以厘米为单位，画布按比例显示。</p><div className="help-steps"><div><span>01</span><h3>画出你的空间</h3><p>绘制房间（B）会自动创建四面墙。绘制墙体（W）默认水平或垂直，按住 Shift 可画斜墙。选中墙体能输入精确长度。</p></div><div><span>02</span><h3>给每件家具真实的尺寸</h3><p>从家具库添加，或创建自定义物件。选中物件后修改长宽高。在空白处按住拖动可框选多件，Shift 点击可增减选择，拖动其中一件即可一起移动。方向键微调 1 cm，Shift + 方向键微调 10 cm。</p></div><div><span>03</span><h3>试一条真实的搬运路线</h3><p>用门洞（D）或推拉门（S）工具在墙体上开门，设置尺寸与开度。已有门洞也可切换为推拉门。选中家具开始搬运，Q / E 每次旋转 15°，碰到障碍会停下。</p></div></div><div className="modal-note"><Info size={17} /><p>试验采用直立矩形外轮廓与门洞净高，仅验证手动走过的路径。已检测推拉门当前门扇位置；未模拟倾斜、抬起、拆卸、平开门扇和搬运人员；实际搬运还应核实这些条件。</p></div><div className="shortcut-list"><span><kbd>Ctrl Z</kbd>撤销</span><span><kbd>Ctrl D</kbd>复制物件</span><span><kbd>Delete</kbd>删除</span><span><kbd>Ctrl S</kbd>导出方案</span></div><button className="primary-button full-width" onClick={() => setModal(null)}>开始规划<ArrowRight size={15} /></button></>}
     </div></div>}
   </div>
 }

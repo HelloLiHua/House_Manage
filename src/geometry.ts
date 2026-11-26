@@ -1,6 +1,21 @@
 import type { Point, Furniture, Plan, Wall, Door } from './model'
 
 export const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y)
+// Apply one bounded, snapped translation to the whole set, preserving spacing.
+export function translateItems(items: Furniture[], delta: Point, snap: boolean): Furniture[] {
+  if (!items.length || ![delta.x, delta.y].every(Number.isFinite)) return items
+  const step = snap ? 10 : 1
+  const shift = (value: number, positions: number[]) => Math.max(-10000 - Math.min(...positions), Math.min(10000 - Math.max(...positions), Math.round(value / step) * step))
+  const x = shift(delta.x, items.map(i => i.x)), y = shift(delta.y, items.map(i => i.y))
+  return x === 0 && y === 0 ? items : items.map(i => ({ ...i, x: i.x + x, y: i.y + y }))
+}
+
+export function itemsInBox(items: Furniture[], a: Point, b: Point): string[] {
+  if (a.x === b.x || a.y === b.y) return []
+  const rect = [a, { x: b.x, y: a.y }, b, { x: a.x, y: b.y }]
+  return items.filter(item => overlaps(rect, corners(item))).map(item => item.id)
+}
+
 export function translateWall(wall: Wall, delta: Point, snap: boolean): Wall {
   if (![delta.x, delta.y].every(Number.isFinite)) return wall
   const step = snap ? 10 : 1
