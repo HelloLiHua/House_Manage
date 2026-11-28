@@ -4,7 +4,7 @@
 
 [网站入口](https://hellolihua.github.io/House_Manage/)（首次部署成功后可用） · [问题反馈](https://github.com/HelloLiHua/House_Manage/issues) · [MIT 许可](LICENSE)
 
-![Roomly 平面设计与推拉门设置](docs/images/roomly-preview.png)
+![Roomly 平面布局：窗户、推拉门与朝向指示盘](docs/images/roomly-preview.png)
 
 **核心体验：画户型 → 输入家具尺寸 → 摆放与旋转 → 试搬并检查碰撞。**
 
